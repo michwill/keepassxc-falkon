@@ -3,8 +3,10 @@ import os
 import sys
 import time
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,7 +24,7 @@ def no_write_spacing(monkeypatch):
 
 @pytest.fixture(scope="session")
 def qapp():
-    return QCoreApplication.instance() or QCoreApplication([])
+    return QApplication.instance() or QApplication([])
 
 
 def process_until(predicate, timeout=5.0):
@@ -31,7 +33,7 @@ def process_until(predicate, timeout=5.0):
     while not predicate():
         if time.monotonic() > deadline:
             raise AssertionError("timed out waiting for condition")
-        QCoreApplication.processEvents()
+        QApplication.processEvents()
         time.sleep(0.005)
 
 

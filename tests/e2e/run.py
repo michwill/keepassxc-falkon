@@ -809,6 +809,15 @@ def run_checks(h):
         assert bob["sub"] == ["Fill", "Copy username", "Copy password"], bob
         assert texts[-1] == "KeePassXC settings\u2026", texts
 
+    @check("toolbar menu at the right edge: the account submenu stays on screen")
+    def _():
+        g = json.loads(h.probe("toolbarSubmenuGeometry", obj="kpxcui"))
+        assert g["submenu"] is not None, g
+        sub_left, _, sub_width, _ = g["submenu"]
+        screen_left, _, screen_width, _ = g["screen"]
+        assert screen_left <= sub_left, g
+        assert sub_left + sub_width <= screen_left + screen_width, g
+
     @check("copy username: plain text")
     def _():
         h.probe("triggerToolbar", "alice \u2014 Single", "Copy username", obj="kpxcui")

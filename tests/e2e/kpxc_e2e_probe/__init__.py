@@ -176,6 +176,35 @@ class UiProbe(QObject):
         action.trigger()
         return True
 
+    @Slot(result=str)
+    def toolbarSubmenuGeometry(self):
+        """Maximize the window, click the KeePassXC toolbar button, open the
+        first account's submenu as hovering would; report where things went."""
+        window = _window()
+        window.showMaximized()
+        QTest.qWait(1000)
+        avail = window.screen().availableGeometry()
+        button = next(w for w in window.findChildren(QWidget) if w.property("button-id") == "keepassxc-falkon")
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        entry = next(a for a in menu.actions() if a.menu() is not None)
+        menu.setActiveAction(entry)
+        QTest.keyClick(menu, Qt.Key.Key_Right)
+        QApplication.processEvents()
+        sub = QApplication.activePopupWidget()
+        result = {
+            "screen": avail.getRect(),
+            "menu": menu.geometry().getRect(),
+            "submenu": sub.geometry().getRect() if isinstance(sub, QMenu) and sub is not menu else None,
+            "scale": window.screen().devicePixelRatio(),
+        }
+        if isinstance(sub, QMenu):
+            sub.close()
+        menu.close()
+        return json.dumps(result)
+
     @Slot(int, result=bool)
     def setCacheTtl(self, seconds):
         # The plugin's module as Falkon loaded it (importing it here could load it twice).

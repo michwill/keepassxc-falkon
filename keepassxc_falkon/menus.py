@@ -21,6 +21,7 @@ from .filler import Filler, frames_of
 from .protocol import Job, KeePassXCClient, KeePassXCError, Login
 from .store import Store
 from .urls import is_web, lookup_url, origin
+from .widgets import SubMenu
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 WAIT_MS = 600
@@ -176,7 +177,8 @@ class EntriesMenu:
             if direct_fill:
                 menu.addAction(label).triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
                 continue
-            sub = menu.addMenu(label)
+            sub = SubMenu(label, menu)
+            menu.addMenu(sub)
             sub.addAction("Fill").triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
             sub.addAction("Copy username").triggered.connect(lambda _c=False, e=login: copy_text(e.login))
             sub.addAction("Copy password").triggered.connect(
@@ -249,7 +251,8 @@ class KeePassXCButton(Falkon.AbstractButtonInterface):
 
     def _on_clicked(self, controller: Falkon.AbstractButtonInterface.ClickController) -> None:
         view = self.webView()
-        menu = QMenu()
+        # Parented to the window, like Falkon's own menus.
+        menu = QMenu(view.window() if view is not None else None)
         if view is None:
             _info(menu, "No website in this tab")
         else:
