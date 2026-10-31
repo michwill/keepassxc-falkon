@@ -59,9 +59,9 @@ class FakeKeePassXC:
 
     # --- test controls ------------------------------------------------
 
-    def add_entry(self, url, login, password, name=None):
+    def add_entry(self, url, login, password, name=None, totp=None):
         entry = {"uuid": uuidlib.uuid4().hex, "login": login, "password": password,
-                 "name": name or urlsplit(url).hostname, "url": url}
+                 "name": name or urlsplit(url).hostname, "url": url, "totp": totp}
         self.entries.append(entry)
         return entry
 
@@ -206,10 +206,19 @@ class FakeKeePassXC:
                 time.sleep(self.logins_delay)
             host = urlsplit(inner["url"]).hostname
             found = [{k: e[k] for k in ("uuid", "login", "password", "name")} | {"group": "Browser"}
+                     | ({"totp": e["totp"]} if e.get("totp") else {})
                      for e in self.entries if urlsplit(e["url"]).hostname == host]
             if not found:
                 return self._error(action, 15)
             return respond(count=len(found), entries=found, hash=self.db_hash, id=inner.get("id", ""))
+
+        if action == "get-totp":
+            if not state["associated"]:
+                return self._error(action, 8)
+            entry = next((e for e in self.entries if e["uuid"] == inner.get("uuid")), None)
+            if entry is None:
+                return self._error(action, 18)
+            return respond(totp=entry.get("totp") or "")
 
         if action == "set-login":
             if not state["associated"]:
@@ -248,7 +257,8 @@ def _child(path, conn):
                 setattr(server, name, args)
                 conn.send(("ok", None))
             else:
-                conn.send(("ok", getattr(server, name)(*args)))
+                positional, keywords = args
+                conn.send(("ok", getattr(server, name)(*positional, **keywords)))
         except Exception as e:  # report to the test instead of hanging it
             conn.send(("error", repr(e)))
 
@@ -272,7 +282,7 @@ class FakeProcess:
         if status == "error":
             raise RuntimeError(value)
         if status == "callable":
-            return lambda *a: self._rpc("call", name, a)
+            return lambda *a, **kw: self._rpc("call", name, (a, kw))
         return value
 
     def __getattr__(self, name):

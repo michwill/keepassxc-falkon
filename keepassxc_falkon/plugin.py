@@ -5,25 +5,24 @@ import os
 
 import Falkon
 from PySide6 import QtCore
-from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEngineScript
 
-from .backend import BACKEND_ID, SYNC_WAIT_MS, KeePassXCBackend
+from .backend import BACKEND_ID, KeePassXCBackend
 from .filler import SAFE_WORLD, Filler, frames_of, web_views
-from .protocol import DATABASE_NOT_OPENED, NOT_ASSOCIATED, NOT_RUNNING, KeePassXCClient
+from .menus import EntriesMenu, KeePassXCButton, app_icon
+from .protocol import KeePassXCClient
 from .settings import SettingsDialog
 from .store import Store
-from .urls import is_web, lookup_url
+from .urls import is_web
 
 log = logging.getLogger("keepassxc_falkon")
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT_NAME = "_keepassxc_falkon_fill"
+# Falkon's NavigationBar::loadSettings() defaults, for a never-customized bar.
+_DEFAULT_TOOLBAR = ["button-backforward", "button-reloadstop", "button-home", "locationbar",
+                    "button-downloads", "adblock-icon", "button-tools"]
 _BRIDGE_ID = "keepassxc"     # window.external.extra.keepassxc in SafeJsWorld
-
-
-def _icon():
-    return QIcon.fromTheme("keepassxc", QIcon(os.path.join(_DIR, "icon.svg")))
 
 
 class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
@@ -45,6 +44,14 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         if state == Falkon.PluginInterface.LateInitState:
             self._inject_into_open_pages()
 
+        self.entries_menu = EntriesMenu(self.client, self.filler, self.store, self.showSettings)
+        self._place_button_once()
+        self._buttons = {}
+        app.plugins().mainWindowCreated.connect(self._add_button)
+        app.plugins().mainWindowDeleted.connect(self._remove_button)
+        for window in app.windows():     # enabled at runtime: windows already open
+            self._add_button(window)
+
         self.backend = KeePassXCBackend(self.client, self.filler, self.showSettings)
         pm = app.autoFill().passwordManager()
         pm.registerBackend(BACKEND_ID, self.backend)
@@ -59,6 +66,8 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
 
     def unload(self):
         app = Falkon.MainApplication.instance()
+        for window in list(self._buttons):
+            self._remove_button(window)
         app.autoFill().passwordManager().unregisterBackend(self.backend)
         Falkon.ExternalJsObject.unregisterExtraObject(self.filler.bridge)
         scripts = app.webProfile().scripts()
@@ -74,38 +83,40 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
     # --- right-click menu on form fields --------------------------------
 
     def populateWebViewMenu(self, menu, view, r):
-        if r.isContentEditable() and is_web(view.url()):
-            self.fill_menu(menu.addMenu(_icon(), "KeePassXC"), view)
+        # Falkon's hit test looks only at the top document: a field inside an
+        # iframe reports the <iframe> element itself.
+        if (r.isContentEditable() or r.tagName() == "iframe") and is_web(view.url()):
+            self.entries_menu.populate(menu.addMenu(app_icon(), "KeePassXC"), view, direct_fill=True)
 
-    def fill_menu(self, sub, view):
-        """The entries for ``view``'s page; picking one fills it in."""
-        url = view.url()
-        job = self.client.get_logins(lookup_url(url))
-        if not job.done:
-            self.client.wait(job, SYNC_WAIT_MS)
+    # --- toolbar buttons (one per window) -------------------------------
 
-        if not job.done:
-            sub.addAction("Waiting for KeePassXC…").setEnabled(False)
-        elif job.error is None and job.result:
-            for login in job.result:
-                label = login.login or "(no username)"
-                if login.name and login.name != login.login:
-                    label += f" \u2014 {login.name}"
-                action = sub.addAction(label)
-                action.triggered.connect(
-                    lambda _checked=False, l=login: self.filler.fill_view(view, url, l.login, l.password))
-        elif job.error is None:
-            sub.addAction("No entries for this site").setEnabled(False)
-        elif job.error.code == DATABASE_NOT_OPENED:
-            sub.addAction("Unlock database").triggered.connect(lambda: self.client.unlock())
-        elif job.error.code == NOT_ASSOCIATED:
-            sub.addAction("Connect to database…").triggered.connect(lambda: self.client.associate())
-        elif job.error.code == NOT_RUNNING:
-            sub.addAction("KeePassXC isn't running").setEnabled(False)
-        else:
-            sub.addAction(str(job.error)).setEnabled(False)
-        sub.addSeparator()
-        sub.addAction("Settings…").triggered.connect(lambda: self.showSettings(view))
+    def _place_button_once(self):
+        """Falkon shows a plugin's button only if the toolbar layout lists it.
+        Add ours once (before the tools menu); windows created from now on
+        pick it up — at startup, that's all of them."""
+        if self.store.option("toolbar_button_placed"):
+            return
+        settings = Falkon.Settings.globalSettings()
+        layout = settings.value("NavigationBar/Layout") or list(_DEFAULT_TOOLBAR)
+        if isinstance(layout, str):
+            layout = [layout]
+        if KeePassXCButton.ID not in layout:
+            at = layout.index("button-tools") if "button-tools" in layout else len(layout)
+            layout.insert(at, KeePassXCButton.ID)
+            settings.setValue("NavigationBar/Layout", layout)
+        self.store.set_option("toolbar_button_placed", True)
+
+    def _add_button(self, window):
+        if window in self._buttons:
+            return
+        button = KeePassXCButton(self.entries_menu, self.client, self.filler)
+        window.navigationBar().addToolButton(button)
+        self._buttons[window] = button
+
+    def _remove_button(self, window):
+        button = self._buttons.pop(window, None)
+        if button is not None:
+            window.navigationBar().removeToolButton(button)
 
     # --- scripts --------------------------------------------------------
 

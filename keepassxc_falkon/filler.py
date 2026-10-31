@@ -18,7 +18,7 @@ import time
 from collections import OrderedDict
 
 import Falkon
-from PySide6.QtCore import QObject, QUrl, Slot
+from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebEngineCore import QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication
@@ -73,6 +73,8 @@ class Bridge(QObject):
 
 
 class Filler(QObject):
+    lookedUp = Signal()     # a page's login lookup finished (toolbar badge)
+
     def __init__(self, client, store, parent=None, views=web_views):
         super().__init__(parent)
         self._client = client
@@ -109,6 +111,7 @@ class Filler(QObject):
         self._client.get_logins(lookup, callback=lambda job: self._logins_for_form(job, token, key, has_password))
 
     def _logins_for_form(self, job, token, key, has_password):
+        self.lookedUp.emit()
         if job.error is not None:
             if job.error.code == protocol.DATABASE_NOT_OPENED and has_password:
                 self._maybe_request_unlock()

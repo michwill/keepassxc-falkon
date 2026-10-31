@@ -18,8 +18,17 @@ browser extension, no extra Python packages.
   forms, script-rendered / nameless fields (React and friends), open shadow
   DOM, and login forms inside iframes (each frame gets its own origin's entry).
 - **Several matching entries:** nothing is filled automatically. Pick an
-  account from the **key icon** in the address bar, or **right-click a login
-  field → KeePassXC**.
+  account from the **KeePassXC toolbar button**, the **key icon** in the
+  address bar, or **right-click a login field → KeePassXC** (works inside
+  iframes too).
+- **Toolbar button** on the navigation bar: the badge shows how many entries
+  match the current tab, and the icon dims when KeePassXC is locked, not
+  running or not connected. Its menu lists the entries per site: the page
+  itself, plus any login iframe on another site. Each entry offers **Fill**,
+  **Copy username**, **Copy password** and, if the entry has one,
+  **Copy TOTP** (a fresh code from KeePassXC). Copied passwords and codes are
+  marked so clipboard managers skip them, and are cleared after 10 seconds
+  (configurable).
 - **Saves and updates** through Falkon's own *Remember / Update* bar. New
   logins go to KeePassXC's "KeePassXC-Browser Passwords" group; an existing
   entry with the same username is updated instead of duplicated.
@@ -57,7 +66,10 @@ Then:
 
 1. Restart Falkon completely (it caches Python modules for the whole session,
    and it's single-instance, so make sure no `falkon` process is left).
-2. *Preferences → Extensions*: tick **KeePassXC**.
+2. *Preferences → Extensions*: tick **KeePassXC**. Its toolbar button is
+   added to the navigation bar the first time (from the next window or
+   restart if you enable it mid-session; move or remove it with *Configure
+   Toolbar*).
 3. *Preferences → Passwords*: set **Backend** to **KeePassXC**.
 4. KeePassXC asks you to name the new connection (e.g. `falkon-laptop`).
    That's the one-time association, the same as for keepassxc-browser.
@@ -91,6 +103,7 @@ in KeePassXC's browser-integration settings.
   socket. That uses `waitForReadyRead`, not a nested event loop, so nothing
   re-enters Falkon while it waits.
 - `backend.py` — the Falkon `PasswordBackend`.
+- `menus.py` — the toolbar button and the field context menu.
 - `filler.py` + `fill.js` — filling. Falkon's own autofill replays a stored
   form submission by input `name`, which KeePassXC entries don't have, so the
   plugin fills by itself. `fill.js` runs in Falkon's isolated JavaScript world
@@ -110,7 +123,8 @@ in KeePassXC's browser-integration settings.
 - Falkon offers to save only logins submitted through a `<form>` in the top
   frame (that's Falkon's own form watcher). Form-less logins and logins inside
   iframes are filled, but you have to add them to KeePassXC yourself.
-- No HTTP basic-auth prefill, TOTP, passkeys or password generator yet.
+- No HTTP basic-auth prefill, passkeys, TOTP autofill or password generator yet
+  (TOTP codes can be copied from the toolbar menu).
 - After updating the plugin, restart Falkon (modules are cached).
 
 ## Development

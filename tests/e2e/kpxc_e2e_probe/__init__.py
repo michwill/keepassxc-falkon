@@ -9,7 +9,8 @@ import sys
 import Falkon
 from PySide6 import QtCore
 from PySide6.QtCore import QByteArray, QObject, QUrl, Slot
-from PySide6.QtWidgets import QLabel, QMenu
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import QLabel, QMenu, QWidget
 
 
 def _autofill():
@@ -77,13 +78,51 @@ class UiProbe(QObject):
     @Slot(result=str)
     def menuLabels(self):
         self._menu = QMenu()
-        _kpxc().fill_menu(self._menu, _current_view())
+        _kpxc().entries_menu.populate(self._menu, _current_view(), direct_fill=True)
         return json.dumps([a.text() for a in self._menu.actions() if not a.isSeparator()])
 
     @Slot(int, result=bool)
     def triggerMenu(self, index):
         self._menu.actions()[index].trigger()
         return True
+
+    @Slot(result=str)
+    def toolbarMenu(self):
+        self._tmenu = QMenu()
+        _kpxc().entries_menu.populate(self._tmenu, _current_view(), direct_fill=False)
+        return json.dumps([{"text": a.text(), "enabled": a.isEnabled(),
+                            "sub": [b.text() for b in a.menu().actions()] if a.menu() else None}
+                           for a in self._tmenu.actions() if not a.isSeparator()])
+
+    @Slot(str, str, result=bool)
+    def triggerToolbar(self, entry, action):
+        for a in self._tmenu.actions():
+            if a.text() == entry:
+                for b in a.menu().actions():
+                    if b.text() == action:
+                        b.trigger()
+                        return True
+        return False
+
+    @Slot(result=str)
+    def clipboard(self):
+        mime = QGuiApplication.clipboard().mimeData()
+        return json.dumps({"text": mime.text() if mime else "",
+                           "secret": bool(mime and mime.hasFormat("x-kde-passwordManagerHint"))})
+
+    @Slot(str, int, result=bool)
+    def setOption(self, name, value):
+        _kpxc().store.set_option(name, value)
+        return True
+
+    @Slot(result=str)
+    def button(self):
+        button = next(iter(_kpxc()._buttons.values()))
+        button.refresh()
+        window = Falkon.MainApplication.instance().getWindow()
+        shown = any(w.property("button-id") == button.id() and w.isVisible()
+                    for w in window.findChildren(QWidget))
+        return json.dumps({"badge": button.badgeText(), "tip": button.toolTip(), "shown": shown})
 
 
 class ProbePlugin(Falkon.PluginInterface, QtCore.QObject):

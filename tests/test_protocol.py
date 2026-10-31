@@ -51,6 +51,15 @@ def test_get_logins_returns_entries_and_caches(client, fake):
     assert fake.actions() == []
 
 
+def test_totp_is_flagged_and_fetched_fresh(client, fake):
+    fake.add_entry("https://example.com", "alice", "s3cret", totp="123456")
+    fake.add_entry("https://example.com", "bob", "pw")
+    associate(client)
+    alice, bob = run(client, client.get_logins(URL)).result
+    assert alice.has_totp and not bob.has_totp
+    assert run(client, client.get_totp(alice.uuid)).result == "123456"
+
+
 def test_no_logins_is_an_empty_result(client, fake):
     associate(client)
     job = run(client, client.get_logins("https://nothing.example/"))

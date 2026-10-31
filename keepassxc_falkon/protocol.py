@@ -71,6 +71,7 @@ class Login:
     name: str = ""
     group: str = ""
     expired: bool = False
+    has_totp: bool = False
 
     @classmethod
     def from_json(cls, obj):
@@ -81,6 +82,9 @@ class Login:
             name=str(obj.get("name", "")),
             group=str(obj.get("group", "")),
             expired=str(obj.get("expired", "")).lower() == "true",
+            # KeePassXC includes the current code; we only keep the fact, and
+            # ask for a fresh code when it's needed (it changes every 30 s).
+            has_totp=bool(obj.get("totp")),
         )
 
 
@@ -207,6 +211,10 @@ class KeePassXCClient(QObject):
         ``"added"``, ``"updated"``, ``"unchanged"`` or ``"declined"``."""
         return self._submit(self._save_login(url, login, password, uuid, trigger_unlock)).then(callback)
 
+    def get_totp(self, uuid, callback=None):
+        """The entry's current TOTP code (empty if it has none)."""
+        return self._submit(self._get_totp(uuid)).then(callback)
+
     def associate(self, callback=None):
         """Connect to the open database (KeePassXC asks the user to name the
         connection). Asks KeePassXC to unlock first if needed, and retries
@@ -289,6 +297,11 @@ class KeePassXCClient(QObject):
         if reply.get("error") not in (None, "", "success"):
             return "declined"   # the user cancelled KeePassXC's update dialog
         return "updated" if uuid else "added"
+
+    def _get_totp(self, uuid):
+        yield from self._session()
+        reply = yield _Raw("get-totp", {"uuid": uuid})
+        return str(reply.get("totp") or "")
 
     def _associate(self):
         self._associate_after_unlock = True

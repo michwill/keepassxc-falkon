@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QVBoxLayout,
+    QLabel, QPushButton, QSpinBox, QVBoxLayout,
 )
 
 from .backend import BACKEND_ID
@@ -63,12 +63,24 @@ class SettingsDialog(QDialog):
         self._many_opt = QCheckBox("When several entries match, fill the best match without asking")
         self._many_opt.setChecked(store.option("fill_first_of_many"))
         self._many_opt.toggled.connect(lambda on: store.set_option("fill_first_of_many", on))
+        clear_row = QHBoxLayout()
+        clear_row.addWidget(QLabel("Clear copied passwords from the clipboard after"))
+        clear = QSpinBox()
+        clear.setRange(0, 600)
+        clear.setSuffix(" s")
+        clear.setSpecialValueText("never")
+        clear.setValue(store.option("clipboard_clear_seconds"))
+        clear.valueChanged.connect(lambda v: store.set_option("clipboard_clear_seconds", v))
+        clear_row.addWidget(clear)
+        clear_row.addStretch(1)
         note = QLabel("Filling on page load follows Falkon's \"Autocomplete passwords\" setting. "
-                      "With several matches, pick an account from the key icon in the address bar "
-                      "or from the right-click menu of a login field.")
+                      "With several matches, pick an account from the KeePassXC toolbar button, "
+                      "the key icon in the address bar, or the right-click menu of a login field.")
         note.setWordWrap(True)
-        for w in (self._unlock_opt, self._many_opt, note):
+        for w in (self._unlock_opt, self._many_opt):
             opt.addWidget(w)
+        opt.addLayout(clear_row)
+        opt.addWidget(note)
 
         forget_row = QHBoxLayout()
         self._saved = QLabel()

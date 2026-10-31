@@ -22,6 +22,12 @@ DEFAULT_OPTIONS = {
     # With several matching entries, fill the best match on page load
     # (Falkon's own behaviour) instead of waiting for the user to pick.
     "fill_first_of_many": False,
+    # Copied passwords / TOTP codes are wiped from the clipboard after this
+    # many seconds (0: never), if nothing else was copied meanwhile.
+    "clipboard_clear_seconds": 10,
+    # Our toolbar button has been put on the navigation bar once; after that
+    # the layout is the user's (Configure Toolbar).
+    "toolbar_button_placed": False,
 }
 
 

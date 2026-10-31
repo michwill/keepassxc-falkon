@@ -15,6 +15,8 @@ Needs the ``e2e`` dependency group (pykeepass, websocket-client).
 import argparse
 import base64
 import hashlib
+import hmac
+import struct
 import http.server
 import json
 import os
@@ -37,6 +39,7 @@ from keepassxc_falkon import sodium  # noqa: E402
 
 DB_PASSWORD = "e2e-password"
 ASSOC_ID = "falkon-e2e"
+TOTP_SECRET = "JBSWY3DPEHPK3PXP"
 FALKON_VERSION = subprocess.run(["falkon", "--version"], capture_output=True, text=True).stdout.split()[-1]
 
 PAGES = {
@@ -74,6 +77,19 @@ customElements.define('x-login', class extends HTMLElement {
 }
 
 
+def totp_codes(secret=TOTP_SECRET, period=30):
+    """RFC 6238 codes for the current and previous period."""
+    key = base64.b32decode(secret)
+    codes = set()
+    for step in (0, -1):
+        counter = int(time.time()) // period + step
+        digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+        codes.add(f"{value % 10 ** 6:06d}")
+    return codes
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -85,7 +101,8 @@ def free_port():
 def build_database(path, port):
     kp = create_database(path, password=DB_PASSWORD)
     root = kp.root_group
-    kp.add_entry(root, "Single", "alice", "s3cret", url=f"http://127.0.0.1:{port}/")
+    alice = kp.add_entry(root, "Single", "alice", "s3cret", url=f"http://127.0.0.1:{port}/")
+    alice.otp = f"otpauth://totp/Single:alice?secret={TOTP_SECRET}&period=30&digits=6&issuer=Single"
     kp.add_entry(root, "Multi B", "bob", "pw-bob", url=f"http://127.0.0.2:{port}/")
     kp.add_entry(root, "Multi C", "carol", "pw-carol", url=f"http://127.0.0.2:{port}/")
     # Pre-approved browser association, as KeePassXC stores it after the user
@@ -401,11 +418,75 @@ def run_checks(h):
         labels = json.loads(h.probe("menuLabels", obj="kpxcui"))
         assert labels[:2] == ["bob \u2014 Multi B", "carol \u2014 Multi C"] or \
             labels[:2] == ["carol \u2014 Multi C", "bob \u2014 Multi B"], labels
-        assert labels[-1] == "Settings\u2026", labels
+        assert labels[-1] == "KeePassXC settings\u2026", labels
         pick = 0 if labels[0].startswith("carol") else 1
         h.probe("triggerMenu", pick, obj="kpxcui")
         wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["carol", "pw-carol"],
                    what="fill from the menu")
+
+    @check("toolbar button is on the navigation bar")
+    def _():
+        assert json.loads(h.probe("button", obj="kpxcui"))["shown"] is True
+
+    @check("toolbar button: badge counts the login iframe's entry")
+    def _():
+        h.navigate(h.url("127.0.0.2", "/frame"))
+        wait_until(lambda: json.loads(h.probe("button", obj="kpxcui"))["badge"] == "1",
+                   what="badge for the iframe's entry")
+
+    @check("toolbar menu groups the page's and the login iframe's entries")
+    def _():
+        items = json.loads(h.probe("toolbarMenu", obj="kpxcui"))
+        texts = [i["text"] for i in items]
+        assert texts[0] == "127.0.0.2" and "127.0.0.1" in texts, texts
+        split = texts.index("127.0.0.1")
+        assert sorted(texts[1:split]) == ["bob \u2014 Multi B", "carol \u2014 Multi C"], texts
+        assert texts[split + 1] == "alice \u2014 Single", texts
+        alice = items[split + 1]
+        assert alice["sub"] == ["Fill", "Copy username", "Copy password", "Copy TOTP"], alice
+        bob = next(i for i in items if i["text"].startswith("bob"))
+        assert bob["sub"] == ["Fill", "Copy username", "Copy password"], bob
+        assert texts[-1] == "KeePassXC settings\u2026", texts
+
+    @check("copy username: plain text")
+    def _():
+        h.probe("triggerToolbar", "alice \u2014 Single", "Copy username", obj="kpxcui")
+        assert json.loads(h.probe("clipboard", obj="kpxcui")) == {"text": "alice", "secret": False}
+
+    @check("copy password: marked secret, cleared after the timeout")
+    def _():
+        h.probe("setOption", "clipboard_clear_seconds", 2, obj="kpxcui")
+        h.probe("triggerToolbar", "alice \u2014 Single", "Copy password", obj="kpxcui")
+        assert json.loads(h.probe("clipboard", obj="kpxcui")) == {"text": "s3cret", "secret": True}
+        wait_until(lambda: json.loads(h.probe("clipboard", obj="kpxcui"))["text"] == "",
+                   timeout=5, what="clipboard cleared")
+
+    @check("copy TOTP: the entry's current code")
+    def _():
+        h.probe("triggerToolbar", "alice \u2014 Single", "Copy TOTP", obj="kpxcui")
+        clip = wait_until(lambda: (lambda c: c if c["text"] else None)(
+            json.loads(h.probe("clipboard", obj="kpxcui"))), what="TOTP on the clipboard")
+        assert clip["secret"] and clip["text"] in totp_codes(), (clip, totp_codes())
+
+    @check("toolbar menu Fill fills the iframe")
+    def _():
+        h.navigate(h.url("127.0.0.2", "/frame"))
+
+        def iframe_values():
+            children = h.cdp.frame_tree().get("childFrames") or []
+            ctx = children and h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
+            return ctx and h.cdp.evaluate("[document.querySelector('input[name=user]').value,"
+                                          "document.querySelector('input[name=pass]').value]", ctx)
+
+        wait_until(lambda: iframe_values() == ["alice", "s3cret"], what="auto-filled iframe")
+        h.cdp.evaluate("void 0")
+        children = h.cdp.frame_tree()["childFrames"]
+        ctx = h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
+        h.cdp.evaluate("document.querySelector('input[name=user]').value = 'someone';"
+                       "document.querySelector('input[name=pass]').value = 'else'", ctx)
+        h.probe("toolbarMenu", obj="kpxcui")
+        h.probe("triggerToolbar", "alice \u2014 Single", "Fill", obj="kpxcui")
+        wait_until(lambda: iframe_values() == ["alice", "s3cret"], what="iframe refilled from the menu")
 
     @check("settings dialog shows a healthy connection")
     def _():
