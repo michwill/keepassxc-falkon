@@ -1,0 +1,20 @@
+[project]
+name = "keepassxc-falkon"
+version = "0.1.0"
+description = "KeePassXC password backend for the Falkon browser"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+# Runtime deps come from the system: Falkon's embedded Python with PySide6
+# (QtWebEngine, QtNetwork) and libsodium. Nothing to install into Falkon.
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+# tests/e2e/run.py: build a throwaway KeePassXC database, drive Falkon over CDP
+e2e = ["pykeepass>=4", "websocket-client>=1.6"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

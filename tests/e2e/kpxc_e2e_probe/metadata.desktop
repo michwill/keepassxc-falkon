@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=KeePassXC e2e probe
+Comment=Test-only: exposes Falkon's password manager to the e2e driver
+Type=Service
+X-Falkon-Type=Extension/Python
+X-Falkon-Author=keepassxc-falkon tests
+X-Falkon-Version=0.1.0

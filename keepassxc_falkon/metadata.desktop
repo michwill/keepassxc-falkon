@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=KeePassXC
+Comment=Use KeePassXC as Falkon's password manager
+Icon=icon.svg
+Type=Service
+X-Falkon-Type=Extension/Python
+
+X-Falkon-Author=Michael Egorov
+X-Falkon-Email=michwill@gmail.com
+X-Falkon-Version=0.1.0
+X-Falkon-Settings=true
