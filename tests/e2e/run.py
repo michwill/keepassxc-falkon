@@ -26,24 +26,24 @@ import argparse
 import base64
 import hashlib
 import hmac
-import struct
 import http.server
 import json
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.request
+from typing import Any
 
 import websocket
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_der_public_key
-from lxml import etree
 from pykeepass import PyKeePass, create_database
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -145,7 +145,8 @@ window.startLogin = function (allow) {
 };
 </script>""",
     "/passkey-frame": """<!doctype html><title>passkey frame</title>
-<iframe id="f" src="http://127.0.0.1:{port}/passkey" allow="publickey-credentials-get *; publickey-credentials-create *"></iframe>""",
+<iframe id="f" src="http://127.0.0.1:{port}/passkey"
+        allow="publickey-credentials-get *; publickey-credentials-create *"></iframe>""",
     "/plain": """<!doctype html><title>plain</title><p>No login form here.</p>""",
     "/frame": """<!doctype html><title>frame</title><p>top</p>
 <iframe id="f" src="http://127.0.0.1:{port}/classic" width="500" height="200"></iframe>""",
@@ -189,10 +190,14 @@ def build_database(path, port):
     meta = kp.tree.getroot().find("Meta")
     custom = meta.find("CustomData")
     if custom is None:
-        custom = etree.SubElement(meta, "CustomData")
-    item = etree.SubElement(custom, "Item")
-    etree.SubElement(item, "Key").text = "KPXC_BROWSER_" + ASSOC_ID
-    etree.SubElement(item, "Value").text = key_b64
+        custom = meta.makeelement("CustomData", {})
+        meta.append(custom)
+    item = custom.makeelement("Item", {})
+    custom.append(item)
+    for tag, text in (("Key", "KPXC_BROWSER_" + ASSOC_ID), ("Value", key_b64)):
+        child = item.makeelement(tag, {})
+        child.text = text
+        item.append(child)
     kp.save()
     db_hash = hashlib.sha256(root.uuid.hex.encode()).hexdigest()
     return db_hash, key_b64
@@ -217,7 +222,7 @@ def serve(host, port):
 
         do_POST = do_GET
 
-        def log_message(self, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
     server = http.server.ThreadingHTTPServer((host, port), Handler)
@@ -330,7 +335,7 @@ def bwrap_command(workdir, env, argv):
            "--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
     for key, value in env.items():
         cmd += ["--setenv", key, value]
-    return cmd + ["--", *argv]
+    return [*cmd, "--", *argv]
 
 
 def start_xvfb():
@@ -420,10 +425,12 @@ class Harness:
         self.x = XDisplay(self.x_display)
         kpxc_env = dict(self.env, QT_QPA_PLATFORM="xcb")
 
-        log = open(os.path.join(self.work, "keepassxc.log"), "w")
-        kpxc = subprocess.Popen(["keepassxc", "--config", self.kpxc_config, "--localconfig", self.kpxc_local_config,
-                                 "--pw-stdin", self.db_path], env=kpxc_env,
-                                stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, text=True)
+        with open(os.path.join(self.work, "keepassxc.log"), "w") as log:
+            kpxc = subprocess.Popen(["keepassxc", "--config", self.kpxc_config,
+                                     "--localconfig", self.kpxc_local_config, "--pw-stdin", self.db_path],
+                                    env=kpxc_env, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
+                                    text=True)
+        assert kpxc.stdin is not None       # stdin=PIPE
         kpxc.stdin.write(DB_PASSWORD + "\n")
         kpxc.stdin.close()
         self.procs.append(kpxc)
@@ -432,9 +439,9 @@ class Harness:
         time.sleep(2)   # the socket comes up before --pw-stdin has opened the database
 
         self.falkon_log = os.path.join(self.work, "falkon.log")
-        flog = open(self.falkon_log, "w")
-        falkon = subprocess.Popen(["falkon", "-r", "-p", "e2e", "about:blank"], env=self.env,
-                                  stdout=flog, stderr=subprocess.STDOUT)
+        with open(self.falkon_log, "w") as flog:
+            falkon = subprocess.Popen(["falkon", "-r", "-p", "e2e", "about:blank"], env=self.env,
+                                      stdout=flog, stderr=subprocess.STDOUT)
         self.procs.append(falkon)
 
         def page_target():
@@ -473,8 +480,8 @@ class Harness:
 
     def navigate(self, url):
         self.cdp.call("Page.navigate", url=url)
-        wait_until(lambda: self.cdp.evaluate("location.href === %s && document.readyState === 'complete'"
-                                             % json.dumps(url)), what=f"load of {url}")
+        wait_until(lambda: self.cdp.evaluate(f"location.href === {json.dumps(url)} && "
+                                             "document.readyState === 'complete'"), what=f"load of {url}")
         return self.cdp.frame_tree()
 
     def main_eval(self, expr):
@@ -484,8 +491,8 @@ class Harness:
         frame_id = self.cdp.frame_tree()["frame"]["id"]
         ctx = wait_until(lambda: self.cdp.context_for(frame_id, isolated=True), what="probe context")
         call_args = ", ".join(json.dumps(a) for a in args)
-        expr = ("new Promise(function (res) { window.external.extra.%s.%s(%s%sres); })"
-                % (obj, method, call_args, ", " if args else ""))
+        sep = ", " if args else ""
+        expr = f"new Promise(function (res) {{ window.external.extra.{obj}.{method}({call_args}{sep}res); }})"
         return self.cdp.evaluate(expr, ctx, await_promise=True)
 
 
@@ -502,7 +509,7 @@ def run_checks(h):
         def deco(fn):
             try:
                 fn()
-            except Exception as e:     # report every check, keep going
+            except Exception as e:  # noqa: BLE001 -- report every check, keep going
                 results.append((name, False, f"{type(e).__name__}: {e}"))
                 print(f"FAIL  {name}: {e}", flush=True)
             else:
@@ -584,7 +591,8 @@ def run_checks(h):
     def _():
         items = json.loads(h.probe("toolbarMenu", obj="kpxcui"))
         texts = [i["text"] for i in items]
-        assert texts[0] == "127.0.0.2" and "127.0.0.1" in texts, texts
+        assert texts[0] == "127.0.0.2", texts
+        assert "127.0.0.1" in texts, texts
         split = texts.index("127.0.0.1")
         assert sorted(texts[1:split]) == ["bob \u2014 Multi B", "carol \u2014 Multi C"], texts
         assert texts[split + 1] == "alice \u2014 Single", texts
@@ -612,7 +620,8 @@ def run_checks(h):
         h.probe("triggerToolbar", "alice \u2014 Single", "Copy TOTP", obj="kpxcui")
         clip = wait_until(lambda: (lambda c: c if c["text"] else None)(
             json.loads(h.probe("clipboard", obj="kpxcui"))), what="TOTP on the clipboard")
-        assert clip["secret"] and clip["text"] in totp_codes(), (clip, totp_codes())
+        assert clip["secret"], (clip, totp_codes())
+        assert clip["text"] in totp_codes(), (clip, totp_codes())
 
     @check("toolbar menu Fill fills the iframe")
     def _():
@@ -714,7 +723,7 @@ def run_checks(h):
     passkey_url = h.url("localhost", "/passkey")
     origin = f"http://localhost:{h.port}"
     rp_id_hash = hashlib.sha256(b"localhost").digest()
-    stash = {}
+    stash: dict[str, Any] = {}
 
     def b64u(text):
         return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
@@ -741,8 +750,11 @@ def run_checks(h):
         h.x.press(PASSKEY_DIALOG, *CONFIRM)
         reg = rp_result("reg")
         assert reg["ok"], reg
-        assert reg["instance"] and reg["responseInstance"] and reg["rawIdMatches"], reg
-        assert reg["alg"] == -7 and reg["transports"] == ["internal"], reg
+        assert reg["instance"], reg
+        assert reg["responseInstance"], reg
+        assert reg["rawIdMatches"], reg
+        assert reg["alg"] == -7, reg
+        assert reg["transports"] == ["internal"], reg
         client_data = json.loads(b64u(reg["json"]["response"]["clientDataJSON"]))
         assert client_data["type"] == "webauthn.create", client_data
         assert client_data["challenge"] == h.main_eval("rp.regChallenge"), client_data
@@ -756,7 +768,8 @@ def run_checks(h):
         assert attested_auth_data(b64u(reg["json"]["response"]["attestationObject"])) == auth_data
         assert b64u(reg["json"]["response"]["authenticatorData"]) == auth_data, "toJSON vs getter"
         key = load_der_public_key(b64u(reg["publicKey"]))
-        assert isinstance(key, ec.EllipticCurvePublicKey) and key.curve.name == "secp256r1", key
+        assert isinstance(key, ec.EllipticCurvePublicKey), key
+        assert key.curve.name == "secp256r1", key
         stash.update(id=reg["id"], key=key, user=h.main_eval("rp.userId"))
 
     @check("passkeys: the passkey is in the database file")
@@ -778,8 +791,10 @@ def run_checks(h):
         h.x.press(PASSKEY_DIALOG, *CONFIRM)
         login = rp_result("login")
         assert login["ok"], login
-        assert login["instance"] and login["responseInstance"], login
-        assert login["id"] == stash["id"] and login["userHandle"] == stash["user"], login
+        assert login["instance"], login
+        assert login["responseInstance"], login
+        assert login["id"] == stash["id"], login
+        assert login["userHandle"] == stash["user"], login
         client_json = b64u(login["clientDataJSON"])
         client_data = json.loads(client_json)
         assert client_data["type"] == "webauthn.get", client_data
@@ -797,7 +812,8 @@ def run_checks(h):
         h.main_eval("startLogin()")
         h.x.press(PASSKEY_DIALOG, *CONFIRM)
         login = rp_result("login")
-        assert login["ok"] and login["id"] == stash["id"], login
+        assert login["ok"], login
+        assert login["id"] == stash["id"], login
 
     @check("passkeys: cancelling in KeePassXC gives NotAllowedError")
     def _():
@@ -805,14 +821,16 @@ def run_checks(h):
         h.main_eval(f"startLogin({json.dumps(stash['id'])})")
         h.x.press(PASSKEY_DIALOG, "Escape")
         login = rp_result("login")
-        assert not login["ok"] and login["name"] == "NotAllowedError", login
+        assert not login["ok"], login
+        assert login["name"] == "NotAllowedError", login
 
     @check("passkeys: registering an excluded credential gives InvalidStateError")
     def _():
         h.navigate(passkey_url)
         h.main_eval(f"startRegister({json.dumps(stash['id'])})")
         reg = rp_result("reg")
-        assert not reg["ok"] and reg["name"] == "InvalidStateError", reg
+        assert not reg["ok"], reg
+        assert reg["name"] == "InvalidStateError", reg
 
     @check("passkeys: a frame from another site is refused")
     def _():
@@ -826,7 +844,8 @@ def run_checks(h):
         wait_until(lambda: h.cdp.evaluate("typeof startLogin === 'function'", ctx), what="iframe script")
         h.cdp.evaluate("startLogin()", ctx)
         login = wait_until(lambda: h.cdp.evaluate("rp.login", ctx), what="iframe result")
-        assert not login["ok"] and login["name"] == "NotAllowedError", login
+        assert not login["ok"], login
+        assert login["name"] == "NotAllowedError", login
 
     @check("passkeys: a locked database is unlocked, then the request goes through")
     def _():
@@ -838,7 +857,8 @@ def run_checks(h):
         h.unlock()
         h.x.press(PASSKEY_DIALOG, *CONFIRM)
         login = rp_result("login")
-        assert login["ok"] and login["id"] == stash["id"], login
+        assert login["ok"], login
+        assert login["id"] == stash["id"], login
 
     @check("passkeys: registered right after a password save, both reach the file")
     def _():

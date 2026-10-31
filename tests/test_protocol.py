@@ -28,7 +28,8 @@ def test_associate_stores_key_and_test_associates_next_session(qapp, fake, store
     fresh = KeePassXCClient(store, paths=lambda: [fake.path])
     fake.clear_received()
     job = run(fresh, fresh.status())
-    assert job.result["associated"] and job.result["id"] == "falkon-test"
+    assert job.result["associated"]
+    assert job.result["id"] == "falkon-test"
     assert fake.actions() == ["change-public-keys", "get-databasehash", "test-associate"]
     assert not fake.unencrypted_nested
 
@@ -43,11 +44,13 @@ def test_get_logins_returns_entries_and_caches(client, fake):
     assert [(e.login, e.password) for e in job.result] == [("alice", "s3cret"), ("bob", "hunter2")]
     assert all(e.uuid for e in job.result)
     sent = dict(fake.received)["get-logins"]
-    assert sent["url"] == URL and sent["keys"] == [{"id": "falkon-test", "key": fake.keys["falkon-test"]}]
+    assert sent["url"] == URL
+    assert sent["keys"] == [{"id": "falkon-test", "key": fake.keys["falkon-test"]}]
 
     fake.clear_received()
     again = client.get_logins(URL)
-    assert again.done and again.result == job.result
+    assert again.done
+    assert again.result == job.result
     assert fake.actions() == []
 
 
@@ -56,7 +59,8 @@ def test_totp_is_flagged_and_fetched_fresh(client, fake):
     fake.add_entry("https://example.com", "bob", "pw")
     associate(client)
     alice, bob = run(client, client.get_logins(URL)).result
-    assert alice.has_totp and not bob.has_totp
+    assert alice.has_totp
+    assert not bob.has_totp
     assert run(client, client.get_totp(alice.uuid)).result == "123456"
 
 
@@ -68,14 +72,16 @@ def test_passkeys_carry_options_origin_and_keys(client, fake):
     assert job.result["id"] == "Y3JlZA"
     action, sent = fake.received[-1]
     assert action == "passkeys-get"
-    assert sent["publicKey"] == options and sent["origin"] == "https://example.com"
+    assert sent["publicKey"] == options
+    assert sent["origin"] == "https://example.com"
     assert sent["keys"] == [{"id": "falkon-test", "key": fake.keys["falkon-test"]}]
 
     fake.passkey_response = {"errorCode": 22}
     job = run(client, client.passkeys("create", {"challenge": "x"}, "https://example.com"))
     assert job.result == {"errorCode": 22}
     action, sent = fake.received[-1]
-    assert action == "passkeys-register" and sent["groupName"] == ""
+    assert action == "passkeys-register"
+    assert sent["groupName"] == ""
     assert not fake.unencrypted_nested
 
 
@@ -91,7 +97,8 @@ def test_passkeys_on_a_locked_database_ask_to_unlock(client, fake):
 def test_no_logins_is_an_empty_result(client, fake):
     associate(client)
     job = run(client, client.get_logins("https://nothing.example/"))
-    assert job.error is None and job.result == []
+    assert job.error is None
+    assert job.result == []
 
 
 def test_lookup_without_association_does_not_prompt(client, fake):
@@ -124,7 +131,8 @@ def test_locked_database_and_unlock(client, fake):
     assert client.locked is True
 
     job = run(client, client.unlock())
-    assert job.result is False and fake.unlock_requests == 1
+    assert job.result is False
+    assert fake.unlock_requests == 1
 
     unlocked = []
     client.databaseUnlocked.connect(lambda: unlocked.append(True))
@@ -172,7 +180,8 @@ def test_save_login_adds_updates_and_skips_duplicates(client, fake):
     assert set_login["uuid"] == fake.entries[0]["uuid"]
 
     job = run(client, client.save_login("https://example.com", "bob", "pw3"))
-    assert job.result == "added" and len(fake.entries) == 2
+    assert job.result == "added"
+    assert len(fake.entries) == 2
 
 
 def test_writes_are_spaced_so_keepassxc_can_save(client, fake, monkeypatch):
@@ -183,12 +192,31 @@ def test_writes_are_spaced_so_keepassxc_can_save(client, fake, monkeypatch):
     lookup = client.get_logins("https://other.org/")
     run(client, first)
     process_until(lambda: lookup.done and second.done, timeout=5)
-    received = list(zip(fake.actions(), fake.received_at))
+    received = list(zip(fake.actions(), fake.received_at, strict=True))
     set_login_at = next(t for a, t in received if a == "set-login")
     register_at = next(t for a, t in received if a == "passkeys-register")
     assert register_at - set_login_at >= 0.5, received
     # Reads aren't held back beyond the write ahead of them in the queue.
     assert lookup.result == []
+
+
+def test_disconnect_during_write_spacing_fails_cleanly(qapp, sock_path, store, monkeypatch):
+    from tests.fake_keepassxc import FakeProcess
+    monkeypatch.setattr(protocol, "WRITE_SPACING_S", 0.8)
+    fake = FakeProcess(sock_path)
+    c = KeePassXCClient(store, paths=lambda: [sock_path])
+    associate(c)
+    run(c, c.save_login("https://example.com", "alice", "pw1"))
+    second = c.save_login("https://example.com", "bob", "pw2")    # waits for the spacing
+    process_until(lambda: c._current is second, timeout=2)
+    fake.close()                                                  # KeePassXC quits meanwhile
+    process_until(lambda: second.done, timeout=5)
+    assert second.error is not None
+    assert second.error.code in (protocol.DISCONNECTED, protocol.NOT_RUNNING)
+    later = c.get_logins("https://example.com/")                   # the queue isn't stuck
+    process_until(lambda: later.done, timeout=5)
+    assert later.error is not None
+    assert later.error.code == protocol.NOT_RUNNING
 
 
 def test_concurrent_lookups_share_and_serialize(client, fake):
@@ -201,7 +229,8 @@ def test_concurrent_lookups_share_and_serialize(client, fake):
     b = client.get_logins("https://other.org/")
     assert a1 is a2
     run(client, b)
-    assert a1.done and b.done
+    assert a1.done
+    assert b.done
     assert [e.login for e in a1.result] == ["alice"]
     assert [e.login for e in b.result] == ["carol"]
     assert fake.actions() == ["get-logins", "get-logins"]
@@ -231,7 +260,9 @@ def test_coalesced_broadcast_and_reply(client, fake):
 def test_not_running(qapp, store, tmp_path):
     c = KeePassXCClient(store, paths=lambda: [str(tmp_path / "missing")])
     job = c.get_logins(URL)
-    assert job.done and job.error.code == protocol.NOT_RUNNING
+    assert job.done
+    assert job.error is not None
+    assert job.error.code == protocol.NOT_RUNNING
     assert c.running is False
 
 

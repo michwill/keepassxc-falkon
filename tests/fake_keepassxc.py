@@ -14,6 +14,7 @@ attribute reads/writes and method calls over a pipe.
 """
 
 import base64
+import contextlib
 import json
 import multiprocessing
 import os
@@ -75,10 +76,8 @@ class FakeKeePassXC:
         data = json.dumps(message).encode()
         with self._lock:
             for conn in list(self._conns):
-                try:
+                with contextlib.suppress(OSError):
                     conn.sendall(data)
-                except OSError:
-                    pass
 
     def actions(self):
         return [a for a, _ in self.received]
@@ -92,17 +91,13 @@ class FakeKeePassXC:
 
     def close(self):
         self._stop = True
-        try:
+        with contextlib.suppress(OSError):
             self._server.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
         self._server.close()
         with self._lock:
             for conn in self._conns:
-                try:
+                with contextlib.suppress(OSError):
                     conn.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
                 conn.close()
         if os.path.exists(self.path):
             os.unlink(self.path)
@@ -269,7 +264,7 @@ def _child(path, conn):
             else:
                 positional, keywords = args
                 conn.send(("ok", getattr(server, name)(*positional, **keywords)))
-        except Exception as e:  # report to the test instead of hanging it
+        except Exception as e:  # noqa: BLE001 -- report to the test instead of hanging it
             conn.send(("error", repr(e)))
 
 

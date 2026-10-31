@@ -16,15 +16,21 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 import Falkon
 from PySide6.QtCore import QObject, QUrl, Signal
-from PySide6.QtWebEngineCore import QWebEngineScript
+from PySide6.QtWebEngineCore import QWebEngineFrame, QWebEnginePage, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication
 
 from . import protocol
 from .urls import is_web, lookup_url, origin, page_key
+
+if TYPE_CHECKING:
+    from .protocol import Job, KeePassXCClient
+    from .store import Store
 
 log = logging.getLogger("keepassxc_falkon")
 
@@ -33,14 +39,14 @@ UNLOCK_THROTTLE_S = 30
 MAX_FORM_PAGES = 500
 
 
-def web_views():
+def web_views() -> list[QWebEngineView]:
     """Every open web view — tabs and popup windows alike. Callers keep the
     list alive while using pages: PyFalkon ties a page's Python wrapper to
     its view's, and a collected view wrapper takes the page's down with it."""
     return [w for w in QApplication.allWidgets() if isinstance(w, QWebEngineView)]
 
 
-def frames_of(page):
+def frames_of(page: QWebEnginePage) -> list[QWebEngineFrame]:
     out, stack = [], [page.mainFrame()]
     while stack:
         frame = stack.pop()
@@ -50,10 +56,10 @@ def frames_of(page):
     return out
 
 
-def frames_at(views, key):
+def frames_at(views: list[QWebEngineView], key: QUrl) -> list[tuple[QWebEngineFrame, QWebEngineView]]:
     """``(frame, view)`` for every frame showing ``key``. Keep ``views``
     referenced while using the frames."""
-    found = []
+    found: list[tuple[QWebEngineFrame, QWebEngineView]] = []
     for view in views:
         try:
             found += [(f, view) for f in frames_of(view.page()) if page_key(f.url()) == key]
@@ -62,7 +68,7 @@ def frames_at(views, key):
     return found
 
 
-def fill_script(creds, token=None):
+def fill_script(creds: Mapping[str, object], token: str | None = None) -> str:
     call = "k.fill(" + json.dumps(creds) + ")"
     guard = "k && k.token === " + json.dumps(token) if token else "k"
     return "(function(){var k=window.__kpxcFalkon;return !!(" + guard + ") && " + call + ";})()"
@@ -71,22 +77,23 @@ def fill_script(creds, token=None):
 class Filler(QObject):
     lookedUp = Signal()     # a page's login lookup finished (toolbar badge)
 
-    def __init__(self, client, store, parent=None, views=web_views):
+    def __init__(self, client: "KeePassXCClient", store: "Store", parent: QObject | None = None,
+                 views: Callable[[], list[QWebEngineView]] = web_views) -> None:
         super().__init__(parent)
         self._client = client
         self._store = store
         self._views = views
         self._last_unlock_request = 0.0
-        self._form_pages = OrderedDict()    # lookup URLs that showed login fields
+        self._form_pages: OrderedDict[str, bool] = OrderedDict()   # lookup URLs that showed login fields
         client.databaseUnlocked.connect(self.rescan_all)
 
     # --- reports from pages -------------------------------------------
 
-    def has_login_form(self, url):
+    def has_login_form(self, url: QUrl) -> bool:
         """Whether a frame at ``url`` has shown login fields this session."""
         return lookup_url(url) in self._form_pages
 
-    def login_form_found(self, token, href, info):
+    def login_form_found(self, token: str, href: str, info: str) -> None:
         url = QUrl(href)
         if not is_web(url) or not token:
             return
@@ -105,7 +112,7 @@ class Filler(QObject):
             has_password = True
         self._client.get_logins(lookup, callback=lambda job: self._logins_for_form(job, token, key, has_password))
 
-    def _logins_for_form(self, job, token, key, has_password):
+    def _logins_for_form(self, job: "Job", token: str, key: QUrl, has_password: bool) -> None:
         self.lookedUp.emit()
         if job.error is not None:
             if job.error.code == protocol.DATABASE_NOT_OPENED and has_password:
@@ -122,7 +129,7 @@ class Filler(QObject):
         for frame, _view in frames_at(views, key):
             frame.runJavaScript(fill_script(creds, token), SAFE_WORLD)
 
-    def _maybe_request_unlock(self):
+    def _maybe_request_unlock(self) -> None:
         if not self._store.option("unlock_on_login_form"):
             return
         now = time.monotonic()
@@ -133,7 +140,7 @@ class Filler(QObject):
 
     # --- explicit fills -----------------------------------------------
 
-    def fill_view(self, view, page_url, username, password):
+    def fill_view(self, view: QWebEngineView, page_url: QUrl, username: str, password: str) -> None:
         """The user picked an entry (looked up for ``page_url``): fill it into
         the view's frames that are on that page's origin, overwriting."""
         page_origin = origin(page_url)
@@ -143,7 +150,7 @@ class Filler(QObject):
             if is_web(url) and origin(url) == page_origin:
                 frame.runJavaScript(fill_script(creds), SAFE_WORLD)
 
-    def rescan_all(self):
+    def rescan_all(self) -> None:
         views = self._views()
         for view in views:
             try:
@@ -154,7 +161,7 @@ class Filler(QObject):
                 continue    # a view Qt already deleted
 
 
-def autocomplete_enabled():
+def autocomplete_enabled() -> bool:
     """Falkon's own "Autocomplete passwords" preference."""
     settings = Falkon.Settings.globalSettings()
     value = settings.value("Web-Browser-Settings/AutoCompletePasswords", True)

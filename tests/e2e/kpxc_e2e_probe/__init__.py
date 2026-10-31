@@ -54,8 +54,19 @@ def _kpxc():
     return sys.modules["keepassxc_falkon"].plugin
 
 
+def _window():
+    window = Falkon.MainApplication.instance().getWindow()
+    assert window is not None
+    return window
+
+
 def _current_view():
-    return Falkon.MainApplication.instance().getWindow().weView()
+    return _window().weView()
+
+
+def _submenu(action):
+    menu = action.menu()
+    return menu if isinstance(menu, QMenu) else None
 
 
 class UiProbe(QObject):
@@ -91,14 +102,15 @@ class UiProbe(QObject):
         self._tmenu = QMenu()
         _kpxc().entries_menu.populate(self._tmenu, _current_view(), direct_fill=False)
         return json.dumps([{"text": a.text(), "enabled": a.isEnabled(),
-                            "sub": [b.text() for b in a.menu().actions()] if a.menu() else None}
+                            "sub": [b.text() for b in sub.actions()] if (sub := _submenu(a)) else None}
                            for a in self._tmenu.actions() if not a.isSeparator()])
 
     @Slot(str, str, result=bool)
     def triggerToolbar(self, entry, action):
         for a in self._tmenu.actions():
-            if a.text() == entry:
-                for b in a.menu().actions():
+            sub = _submenu(a)
+            if a.text() == entry and sub is not None:
+                for b in sub.actions():
                     if b.text() == action:
                         b.trigger()
                         return True
@@ -119,9 +131,8 @@ class UiProbe(QObject):
     def button(self):
         button = next(iter(_kpxc()._buttons.values()))
         button.refresh()
-        window = Falkon.MainApplication.instance().getWindow()
         shown = any(w.property("button-id") == button.id() and w.isVisible()
-                    for w in window.findChildren(QWidget))
+                    for w in _window().findChildren(QWidget))
         return json.dumps({"badge": button.badgeText(), "tip": button.toolTip(), "shown": shown})
 
 

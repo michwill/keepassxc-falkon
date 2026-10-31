@@ -160,10 +160,15 @@ in KeePassXC's browser-integration settings.
 
 ```bash
 uv venv --system-site-packages     # PySide6 comes from the system, as in Falkon
-uv pip install pytest pykeepass websocket-client cryptography
-.venv/bin/python -m pytest         # unit tests against a fake KeePassXC
-.venv/bin/python tests/e2e/run.py  # real Falkon + real KeePassXC, isolated
+uv pip install pytest ruff mypy ty pykeepass websocket-client cryptography
+./check.sh                         # ruff, mypy, ty, unit tests (fake KeePassXC)
+./check.sh --e2e                   # … plus real Falkon + real KeePassXC, sandboxed
 ```
+
+The package is type-checked strictly (every function annotated, mypy and
+ty). `stubs/Falkon.pyi` types the part of Falkon's PyFalkon API the plugin
+uses, against the PySide6 classes it derives from. Ruff runs a broad rule set
+(bugbear, simplify, pyupgrade, pytest style, …); see `pyproject.toml`.
 
 The end-to-end run builds a throwaway KeePassXC database and Falkon profile
 and runs both apps inside a bubblewrap sandbox, sealed off from your desktop

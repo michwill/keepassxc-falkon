@@ -19,7 +19,7 @@ class CryptoError(Exception):
     pass
 
 
-def _load():
+def _load() -> ctypes.CDLL:
     name = ctypes.util.find_library("sodium")
     for candidate in filter(None, (name, "libsodium.so.26", "libsodium.so.23", "libsodium.so")):
         try:
@@ -41,7 +41,7 @@ _lib.crypto_box_easy.argtypes = (
 _lib.crypto_box_open_easy.argtypes = _lib.crypto_box_easy.argtypes
 
 
-def keypair():
+def keypair() -> tuple[bytes, bytes]:
     """A fresh X25519 key pair as ``(public, secret)`` bytes."""
     pk = ctypes.create_string_buffer(PUBLICKEYBYTES)
     sk = ctypes.create_string_buffer(SECRETKEYBYTES)
@@ -49,7 +49,7 @@ def keypair():
     return pk.raw, sk.raw
 
 
-def increment_nonce(nonce):
+def increment_nonce(nonce: bytes) -> bytes:
     """``sodium_increment``: the nonce as a little-endian counter, plus one.
     KeePassXC answers every request with the request's nonce incremented."""
     n = (int.from_bytes(nonce, "little") + 1) % (1 << (8 * len(nonce)))
@@ -59,13 +59,13 @@ def increment_nonce(nonce):
 class Box:
     """``crypto_box`` between our secret key and the peer's public key."""
 
-    def __init__(self, secret_key, peer_public_key):
+    def __init__(self, secret_key: bytes, peer_public_key: bytes) -> None:
         if len(secret_key) != SECRETKEYBYTES or len(peer_public_key) != PUBLICKEYBYTES:
             raise CryptoError("bad key length")
         self._sk = secret_key
         self._pk = peer_public_key
 
-    def encrypt(self, plaintext, nonce):
+    def encrypt(self, plaintext: bytes, nonce: bytes) -> bytes:
         if len(nonce) != NONCEBYTES:
             raise CryptoError("bad nonce length")
         out = ctypes.create_string_buffer(len(plaintext) + MACBYTES)
@@ -73,7 +73,7 @@ class Box:
             raise CryptoError("encryption failed")
         return out.raw
 
-    def decrypt(self, ciphertext, nonce):
+    def decrypt(self, ciphertext: bytes, nonce: bytes) -> bytes:
         if len(nonce) != NONCEBYTES or len(ciphertext) < MACBYTES:
             raise CryptoError("bad nonce or ciphertext length")
         out = ctypes.create_string_buffer(len(ciphertext) - MACBYTES)

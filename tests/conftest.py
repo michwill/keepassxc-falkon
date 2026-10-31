@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import time
@@ -7,10 +8,10 @@ from PySide6.QtCore import QCoreApplication
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from keepassxc_falkon import protocol  # noqa: E402
-from keepassxc_falkon.protocol import KeePassXCClient  # noqa: E402
-from keepassxc_falkon.store import Store  # noqa: E402
-from tests.fake_keepassxc import FakeProcess  # noqa: E402
+from keepassxc_falkon import protocol
+from keepassxc_falkon.protocol import KeePassXCClient
+from keepassxc_falkon.store import Store
+from tests.fake_keepassxc import FakeProcess
 
 
 @pytest.fixture(autouse=True)
@@ -40,10 +41,8 @@ def sock_path(tmp_path):
     import tempfile
     d = tempfile.mkdtemp(prefix="kpxc-")
     yield os.path.join(d, "s")
-    try:
+    with contextlib.suppress(OSError):
         os.rmdir(d)
-    except OSError:
-        pass
 
 
 @pytest.fixture

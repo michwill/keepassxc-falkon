@@ -27,12 +27,17 @@ import logging
 import os
 import time
 from collections import deque
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from PySide6.QtCore import QDir, QObject, QStandardPaths, QTimer, Signal
 from PySide6.QtNetwork import QLocalSocket
 
 from . import sodium
+
+if TYPE_CHECKING:
+    from .store import Store
 
 log = logging.getLogger("keepassxc_falkon")
 
@@ -64,9 +69,15 @@ MAX_BUFFER = 8 * 1024 * 1024
 # key derivation included, takes about a second with default settings.
 WRITE_SPACING_S = 3.0
 
+T = TypeVar("T")
+# A job yields wire requests (or pauses) and is resumed with the decrypted
+# replies; its return value becomes the Job's result.
+Steps = Generator["_Raw | _Sleep", Any, T]
+Callback = Callable[["Job"], object]
+
 
 class KeePassXCError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
 
@@ -82,7 +93,7 @@ class Login:
     has_totp: bool = False
 
     @classmethod
-    def from_json(cls, obj):
+    def from_json(cls, obj: dict[str, Any]) -> "Login":
         return cls(
             uuid=str(obj.get("uuid", "")),
             login=str(obj.get("login", "")),
@@ -96,7 +107,7 @@ class Login:
         )
 
 
-def socket_paths():
+def socket_paths() -> list[str]:
     """Where KeePassXC may be listening (src/browser/BrowserShared.cpp)."""
     runtime = os.environ.get("XDG_RUNTIME_DIR") or QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.RuntimeLocation)
@@ -109,46 +120,48 @@ def socket_paths():
     return paths
 
 
-def _b64(data):
+def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _unb64(text):
+def _unb64(text: str) -> bytes:
     return base64.b64decode(text, validate=True)
 
 
 class _Raw:
     """One request on the wire. ``plain`` marks the unencrypted key exchange."""
 
-    def __init__(self, action, message=None, *, plain=None, nonce=None,
-                 trigger_unlock=False, timeout=QUICK_TIMEOUT_MS):
+    def __init__(self, action: str, message: dict[str, Any] | None = None, *,
+                 plain: dict[str, str] | None = None,
+                 trigger_unlock: bool = False, timeout: int = QUICK_TIMEOUT_MS) -> None:
         self.action = action
         self.message = message or {}
         self.plain = plain
-        self.nonce = nonce
         self.trigger_unlock = trigger_unlock
         self.timeout = timeout
-        self.expected_nonce = None
+        self.expected_nonce: str | None = None
 
 
 class _Sleep:
     """Yielded by a job to pause without sending anything."""
 
-    def __init__(self, seconds):
+    def __init__(self, seconds: float) -> None:
         self.seconds = seconds
 
 
 class Job:
     """A running operation. ``result``/``error`` are set when ``done``."""
 
-    def __init__(self, gen=None):
+    def __init__(self, gen: Steps[Any] | None = None) -> None:
         self._gen = gen
         self.done = False
-        self.result = None
-        self.error = None
-        self._callbacks = []
+        self.result: Any = None
+        self.error: KeePassXCError | None = None
+        # A synchronous caller (Falkon) already gave up waiting for it once.
+        self.sync_timed_out = False
+        self._callbacks: list[Callback] = []
 
-    def then(self, callback):
+    def then(self, callback: Callback | None) -> "Job":
         """Call ``callback(job)`` once done (from the event loop, never
         synchronously from inside a Falkon call)."""
         if callback is None:
@@ -160,7 +173,7 @@ class Job:
         return self
 
     @classmethod
-    def finished(cls, result=None, error=None):
+    def finished(cls, result: Any = None, error: KeePassXCError | None = None) -> "Job":
         job = cls()
         job.done, job.result, job.error = True, result, error
         return job
@@ -172,39 +185,39 @@ class KeePassXCClient(QObject):
     databaseUnlocked = Signal()
     databaseLocked = Signal()
 
-    def __init__(self, store, parent=None, paths=socket_paths):
+    def __init__(self, store: "Store", parent: QObject | None = None,
+                 paths: Callable[[], list[str]] = socket_paths) -> None:
         super().__init__(parent)
         self._store = store
         self._paths = paths
         self._client_id = _b64(os.urandom(24))
-        self._socket = None
+        self._socket: QLocalSocket | None = None
         self._buffer = b""
-        self._jobs = deque()
-        self._current = None
-        self._inflight = None
+        self._jobs: deque[Job] = deque()
+        self._current: Job | None = None
+        self._inflight: _Raw | None = None
         self._pumping = False
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
-        self._cache = {}          # url -> (monotonic time, [Login])
-        self._pending = {}        # url -> Job (get-logins in progress)
+        self._cache: dict[str, tuple[float, list[Login]]] = {}
+        self._pending: dict[str, Job] = {}     # get-logins in progress, by url
         self._associate_after_unlock = False
-        self._last_write = None    # monotonic time our last change was answered
+        self._last_write: float | None = None   # when our last change was answered
         # Session state, reset whenever the connection drops.
-        self._box = None
-        self._public_key = None
-        self._session_hash = None  # database test-associated this session
+        self._crypto: tuple[sodium.Box, bytes] | None = None   # (box, our public key)
+        self._session_hash: str | None = None  # database test-associated this session
         # What we last learned, for status displays.
-        self.running = None
-        self.locked = None
-        self.db_hash = None
-        self.associated_id = None
+        self.running: bool | None = None
+        self.locked: bool | None = None
+        self.db_hash: str | None = None
+        self.associated_id: str | None = None
 
     # ------------------------------------------------------------------
     # Public API — every call returns a Job; pass ``callback(job)`` or
     # block on it with ``wait()``.
 
-    def get_logins(self, url, callback=None):
+    def get_logins(self, url: str, callback: Callback | None = None) -> Job:
         """The entries KeePassXC offers for ``url`` (empty if none).
         Answers from a short-lived cache; concurrent asks share one request."""
         hit = self._cache.get(url)
@@ -217,46 +230,48 @@ class KeePassXCClient(QObject):
             job.then(lambda _j: self._pending.pop(url, None))
         return job.then(callback)
 
-    def cached_logins(self, url):
+    def cached_logins(self, url: str) -> list[Login] | None:
         hit = self._cache.get(url)
         return hit[1] if hit is not None else None
 
-    def save_login(self, url, login, password, uuid=None, *, trigger_unlock=False, callback=None):
+    def save_login(self, url: str, login: str, password: str, uuid: str | None = None, *,
+                   trigger_unlock: bool = False, callback: Callback | None = None) -> Job:
         """Create or update an entry. Without ``uuid``, an existing entry
         with the same username is updated rather than duplicated. Result:
         ``"added"``, ``"updated"``, ``"unchanged"`` or ``"declined"``."""
         return self._submit(self._save_login(url, login, password, uuid, trigger_unlock)).then(callback)
 
-    def get_totp(self, uuid, callback=None):
+    def get_totp(self, uuid: str, callback: Callback | None = None) -> Job:
         """The entry's current TOTP code (empty if it has none)."""
         return self._submit(self._get_totp(uuid)).then(callback)
 
-    def passkeys(self, kind, public_key, origin, callback=None):
+    def passkeys(self, kind: str, public_key: dict[str, Any], origin: str,
+                 callback: Callback | None = None) -> Job:
         """Register (``kind == "create"``) or use (``"get"``) a passkey.
         KeePassXC validates ``origin`` against the relying party, asks the
         user, and answers with the credential, or with ``{"errorCode": n}``."""
         action = "passkeys-register" if kind == "create" else "passkeys-get"
         return self._submit(self._passkeys(action, public_key, origin)).then(callback)
 
-    def associate(self, callback=None):
+    def associate(self, callback: Callback | None = None) -> Job:
         """Connect to the open database (KeePassXC asks the user to name the
         connection). Asks KeePassXC to unlock first if needed, and retries
         once the database is unlocked."""
         return self._submit(self._associate()).then(callback)
 
-    def unlock(self, callback=None):
+    def unlock(self, callback: Callback | None = None) -> Job:
         """Ask KeePassXC to show its unlock dialog (no-op if unlocked)."""
         return self._submit(self._unlock()).then(callback)
 
-    def status(self, callback=None):
+    def status(self, callback: Callback | None = None) -> Job:
         """Probe without prompting: result is a dict for status displays."""
         return self._submit(self._status()).then(callback)
 
     @property
-    def associated(self):
+    def associated(self) -> bool:
         return self._session_hash is not None and self._session_hash == self.db_hash
 
-    def forget_associations(self):
+    def forget_associations(self) -> None:
         """Drop every stored connection (KeePassXC keeps its side until the
         user removes it under Database settings → Browser Integration)."""
         self._store.clear_associations()
@@ -264,7 +279,7 @@ class KeePassXCClient(QObject):
         self._cache = {}
         self.stateChanged.emit()
 
-    def wait(self, job, timeout_ms):
+    def wait(self, job: Job, timeout_ms: int) -> bool:
         """Block up to ``timeout_ms`` for ``job``, processing KeePassXC's
         replies as they arrive. True if it finished."""
         deadline = time.monotonic() + timeout_ms / 1000
@@ -280,7 +295,7 @@ class KeePassXCClient(QObject):
     # ------------------------------------------------------------------
     # Jobs
 
-    def _get_logins(self, url):
+    def _get_logins(self, url: str) -> Steps[list[Login]]:
         yield from self._session()
         keys = [{"id": a["id"], "key": a["key"]} for a in self._store.associations().values()]
         try:
@@ -295,7 +310,8 @@ class KeePassXCClient(QObject):
         self._cache[url] = (time.monotonic(), logins)
         return logins
 
-    def _save_login(self, url, login, password, uuid, trigger_unlock):
+    def _save_login(self, url: str, login: str, password: str, uuid: str | None,
+                    trigger_unlock: bool) -> Steps[str]:
         yield from self._session(trigger_unlock=trigger_unlock)
         if not uuid:
             self._cache.pop(url, None)
@@ -323,12 +339,12 @@ class KeePassXCClient(QObject):
             return "declined"   # the user cancelled KeePassXC's update dialog
         return "updated" if uuid else "added"
 
-    def _get_totp(self, uuid):
+    def _get_totp(self, uuid: str) -> Steps[str]:
         yield from self._session()
         reply = yield _Raw("get-totp", {"uuid": uuid})
         return str(reply.get("totp") or "")
 
-    def _passkeys(self, action, public_key, origin):
+    def _passkeys(self, action: str, public_key: dict[str, Any], origin: str) -> Steps[dict[str, Any]]:
         yield from self._session(trigger_unlock=True)
         keys = [{"id": a["id"], "key": a["key"]} for a in self._store.associations().values()]
         message = {"publicKey": public_key, "origin": origin, "keys": keys}
@@ -343,7 +359,7 @@ class KeePassXCClient(QObject):
             raise KeePassXCError(PROTOCOL_ERROR, "KeePassXC sent no passkey response")
         return response
 
-    def _associate(self):
+    def _associate(self) -> Steps[str]:
         self._associate_after_unlock = True
         try:
             db_hash = yield from self._session(interactive=True, trigger_unlock=True)
@@ -354,7 +370,7 @@ class KeePassXCClient(QObject):
         self._associate_after_unlock = False
         return db_hash
 
-    def _unlock(self):
+    def _unlock(self) -> Steps[bool]:
         self._connect()
         yield from self._keys()
         if self.db_hash is None:
@@ -368,7 +384,7 @@ class KeePassXCClient(QObject):
             self._set_hash(reply.get("hash"))
         return True
 
-    def _status(self):
+    def _status(self) -> Steps[dict[str, Any]]:
         try:
             yield from self._session()
         except KeePassXCError as e:
@@ -384,16 +400,16 @@ class KeePassXCClient(QObject):
 
     # --- session prerequisites ----------------------------------------
 
-    def _session(self, interactive=False, trigger_unlock=False):
+    def _session(self, interactive: bool = False, trigger_unlock: bool = False) -> Steps[str]:
         """Connected, keys exchanged, open database known and associated.
         Returns the database hash."""
         self._connect()
-        yield from self._keys()
-        if self.db_hash is None:
-            reply = yield _Raw("get-databasehash", trigger_unlock=trigger_unlock)
-            self._set_hash(reply.get("hash"))
-        # A lock/unlock broadcast can reset self.db_hash while we wait below.
+        public_key = yield from self._keys()
+        # Kept locally: a lock/unlock broadcast can reset self.db_hash while we wait.
         db_hash = self.db_hash
+        if db_hash is None:
+            reply = yield _Raw("get-databasehash", trigger_unlock=trigger_unlock)
+            db_hash = self._set_hash(reply.get("hash"))
         if self._session_hash == db_hash:
             return db_hash
 
@@ -414,15 +430,15 @@ class KeePassXCClient(QObject):
             self.associated_id = None
             raise KeePassXCError(NOT_ASSOCIATED, "The open KeePassXC database isn't connected to Falkon")
         id_public, _ = sodium.keypair()
-        reply = yield _Raw("associate", {"key": _b64(self._public_key), "idKey": _b64(id_public)},
+        reply = yield _Raw("associate", {"key": _b64(public_key), "idKey": _b64(id_public)},
                            timeout=INTERACTIVE_TIMEOUT_MS)
-        db_hash = reply.get("hash") or db_hash
-        self._store.set_association(db_hash, reply["id"], _b64(id_public))
-        self._set_hash(db_hash)
-        self._set_associated(db_hash, reply["id"])
+        db_hash = self._set_hash(reply.get("hash") or db_hash)
+        assoc_id = str(reply["id"])
+        self._store.set_association(db_hash, assoc_id, _b64(id_public))
+        self._set_associated(db_hash, assoc_id)
         return db_hash
 
-    def _space_writes(self):
+    def _space_writes(self) -> Steps[None]:
         """Wait until KeePassXC has had time to save our previous change."""
         if self._last_write is not None:
             remaining = WRITE_SPACING_S - (time.monotonic() - self._last_write)
@@ -430,24 +446,24 @@ class KeePassXCClient(QObject):
                 log.debug("waiting %.1f s for KeePassXC to save the previous change", remaining)
                 yield _Sleep(remaining)
 
-    def _keys(self):
-        if self._box is not None:
-            return
+    def _keys(self) -> Steps[bytes]:
+        """This session's keys, exchanging them first if needed; returns our public key."""
+        if self._crypto is not None:
+            return self._crypto[1]
         public, secret = sodium.keypair()
-        nonce = os.urandom(sodium.NONCEBYTES)
-        reply = yield _Raw("change-public-keys", plain={"publicKey": _b64(public), "nonce": _b64(nonce)},
-                           nonce=nonce)
-        self._box = sodium.Box(secret, _unb64(reply["publicKey"]))
-        self._public_key = public
+        reply = yield _Raw("change-public-keys", plain={"publicKey": _b64(public)})
+        self._crypto = (sodium.Box(secret, _unb64(reply["publicKey"])), public)
+        return public
 
-    def _set_hash(self, db_hash):
-        if not db_hash:
+    def _set_hash(self, db_hash: object) -> str:
+        if not isinstance(db_hash, str) or not db_hash:
             raise KeePassXCError(PROTOCOL_ERROR, "KeePassXC sent no database hash")
         if db_hash != self.db_hash or self.locked is not False:
             self.db_hash, self.locked = db_hash, False
             self.stateChanged.emit()
+        return db_hash
 
-    def _set_associated(self, db_hash, assoc_id):
+    def _set_associated(self, db_hash: str, assoc_id: str) -> None:
         changed = self._session_hash != db_hash or self.associated_id != assoc_id
         self._session_hash, self.associated_id = db_hash, assoc_id
         if changed:
@@ -456,25 +472,25 @@ class KeePassXCClient(QObject):
     # ------------------------------------------------------------------
     # Job scheduling
 
-    def _submit(self, gen):
+    def _submit(self, gen: Steps[Any]) -> Job:
         job = Job(gen)
         self._jobs.append(job)
         self._pump()
         return job
 
-    def _pump(self):
+    def _pump(self) -> None:
         if self._pumping:
             return
         self._pumping = True
         try:
             while self._current is None and self._jobs:
                 self._current = self._jobs.popleft()
-                self._step(None, None)
+                self._step(self._current, None, None)
         finally:
             self._pumping = False
 
-    def _step(self, value, error):
-        job = self._current
+    def _step(self, job: Job, value: Any, error: KeePassXCError | None) -> None:
+        assert job._gen is not None, "only submitted jobs have steps"
         try:
             raw = job._gen.throw(error) if error is not None else job._gen.send(value)
         except StopIteration as stop:
@@ -491,13 +507,13 @@ class KeePassXCClient(QObject):
             try:
                 self._send(raw)
             except KeePassXCError as e:
-                self._step(None, e)
+                self._step(job, None, e)
 
-    def _resume(self, job):
+    def _resume(self, job: Job) -> None:
         if self._current is job and not job.done:
-            self._step(None, None)
+            self._step(job, None, None)
 
-    def _finish(self, job, result=None, error=None):
+    def _finish(self, job: Job, result: Any = None, error: KeePassXCError | None = None) -> None:
         job.done, job.result, job.error = True, result, error
         if error is not None:
             self._note_error(error)
@@ -509,7 +525,7 @@ class KeePassXCClient(QObject):
             self._current = None
             self._pump()
 
-    def _note_error(self, error):
+    def _note_error(self, error: KeePassXCError) -> None:
         if error.code == DATABASE_NOT_OPENED and self.locked is not True:
             self.locked, self.db_hash, self._session_hash = True, None, None
             self.stateChanged.emit()
@@ -520,7 +536,7 @@ class KeePassXCClient(QObject):
     # ------------------------------------------------------------------
     # Wire
 
-    def _connect(self):
+    def _connect(self) -> None:
         sock = self._socket
         if sock is not None and sock.state() == QLocalSocket.LocalSocketState.ConnectedState:
             return
@@ -542,17 +558,19 @@ class KeePassXCClient(QObject):
             sock.deleteLater()
         raise KeePassXCError(NOT_RUNNING, "KeePassXC isn't running, or its browser integration is off")
 
-    def _send(self, raw):
+    def _send(self, raw: _Raw) -> None:
         sock = self._socket
         if sock is None or sock.state() != QLocalSocket.LocalSocketState.ConnectedState:
             raise KeePassXCError(DISCONNECTED, "Lost the connection to KeePassXC")
+        nonce = os.urandom(sodium.NONCEBYTES)
         if raw.plain is not None:
-            envelope = {"action": raw.action, **raw.plain}
-            nonce = raw.nonce
+            envelope = {"action": raw.action, **raw.plain, "nonce": _b64(nonce)}
         else:
-            nonce = os.urandom(sodium.NONCEBYTES)
+            # Gone if the connection dropped while the job was paused (_Sleep).
+            if self._crypto is None:
+                raise KeePassXCError(DISCONNECTED, "Lost the connection to KeePassXC")
             inner = json.dumps({"action": raw.action, **raw.message}).encode("utf-8")
-            envelope = {"action": raw.action, "message": _b64(self._box.encrypt(inner, nonce)),
+            envelope = {"action": raw.action, "message": _b64(self._crypto[0].encrypt(inner, nonce)),
                         "nonce": _b64(nonce)}
             if raw.trigger_unlock:
                 envelope["triggerUnlock"] = "true"
@@ -563,7 +581,7 @@ class KeePassXCClient(QObject):
         sock.flush()
         self._timer.start(raw.timeout)
 
-    def _on_ready_read(self):
+    def _on_ready_read(self) -> None:
         sock = self.sender()
         if sock is None or sock is not self._socket:
             return
@@ -586,7 +604,7 @@ class KeePassXCClient(QObject):
         if not self._buffer.strip():
             self._buffer = b""
 
-    def _handle(self, message):
+    def _handle(self, message: dict[str, Any]) -> None:
         action = message.get("action")
         if action == "database-locked":
             self._on_database_locked()
@@ -594,8 +612,8 @@ class KeePassXCClient(QObject):
         if action == "database-unlocked":
             self._on_database_unlocked()
             return
-        raw = self._inflight
-        if raw is None or action != raw.action:
+        raw, job = self._inflight, self._current
+        if raw is None or job is None or action != raw.action:
             log.debug("ignoring unexpected KeePassXC message %r", action)
             return
         self._inflight = None
@@ -603,11 +621,11 @@ class KeePassXCClient(QObject):
         try:
             reply = self._open(raw, message)
         except KeePassXCError as e:
-            self._step(None, e)
+            self._step(job, None, e)
         else:
-            self._step(reply, None)
+            self._step(job, reply, None)
 
-    def _open(self, raw, message):
+    def _open(self, raw: _Raw, message: dict[str, Any]) -> dict[str, Any]:
         if "errorCode" in message:
             try:
                 code = int(message["errorCode"])
@@ -620,8 +638,10 @@ class KeePassXCClient(QObject):
             if message.get("success") != "true" or not message.get("publicKey"):
                 raise KeePassXCError(PROTOCOL_ERROR, "KeePassXC refused the key exchange")
             return message
+        if self._crypto is None:
+            raise KeePassXCError(DISCONNECTED, "Lost the connection to KeePassXC")
         try:
-            plaintext = self._box.decrypt(_unb64(message["message"]), _unb64(message["nonce"]))
+            plaintext = self._crypto[0].decrypt(_unb64(message["message"]), _unb64(message["nonce"]))
             reply = json.loads(plaintext)
         except (KeyError, ValueError, sodium.CryptoError) as e:
             raise KeePassXCError(PROTOCOL_ERROR, f"Undecryptable reply from KeePassXC: {e}") from None
@@ -631,16 +651,16 @@ class KeePassXCClient(QObject):
             raise KeePassXCError(PROTOCOL_ERROR, "KeePassXC reported failure")
         return reply
 
-    def _on_timeout(self):
+    def _on_timeout(self) -> None:
         log.warning("KeePassXC didn't answer %r in time; reconnecting",
                     self._inflight.action if self._inflight else None)
         self._fail_connection(KeePassXCError(TIMEOUT, "KeePassXC didn't answer"))
 
-    def _on_disconnected(self):
+    def _on_disconnected(self) -> None:
         if self._socket is not None and self.sender() is self._socket:
             self._fail_connection(KeePassXCError(DISCONNECTED, "KeePassXC closed the connection"))
 
-    def _fail_connection(self, error):
+    def _fail_connection(self, error: KeePassXCError) -> None:
         """Drop the socket (a late reply would desynchronize us) and fail the
         request in flight; queued jobs reconnect on their own."""
         had_request = self._inflight is not None
@@ -649,21 +669,22 @@ class KeePassXCClient(QObject):
             self.running = False
             self.stateChanged.emit()
         if had_request and self._current is not None:
-            self._step(None, error)
+            self._step(self._current, None, error)
 
-    def _drop_socket(self):
+    def _drop_socket(self) -> None:
         sock, self._socket = self._socket, None
         self._inflight = None
         self._timer.stop()
         self._buffer = b""
-        self._box = self._public_key = self._session_hash = None
+        self._crypto = None
+        self._session_hash = None
         self.db_hash = None
         self._cache = {}
         if sock is not None:
             sock.abort()
             sock.deleteLater()
 
-    def _on_database_locked(self):
+    def _on_database_locked(self) -> None:
         log.debug("KeePassXC: database locked")
         self.locked, self.db_hash, self._session_hash = True, None, None
         self._cache = {}
@@ -672,7 +693,7 @@ class KeePassXCClient(QObject):
         # not inside whatever synchronous Falkon call is pumping the socket.
         QTimer.singleShot(0, self.databaseLocked.emit)
 
-    def _on_database_unlocked(self):
+    def _on_database_unlocked(self) -> None:
         # Possibly a different database (KeePassXC also says this when the
         # active database tab changes): re-learn its hash before trusting it.
         log.debug("KeePassXC: database unlocked")

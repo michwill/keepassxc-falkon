@@ -6,7 +6,9 @@ from keepassxc_falkon.webauthn import attested_auth_data, b64url, cbor_loads, un
 def test_b64url_roundtrip_without_padding():
     for data in (b"", b"a", b"ab", b"abc", bytes(range(256))):
         text = b64url(data)
-        assert "=" not in text and "+" not in text and "/" not in text
+        assert "=" not in text
+        assert "+" not in text
+        assert "/" not in text
         assert unb64url(text) == data
 
 

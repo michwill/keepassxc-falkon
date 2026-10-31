@@ -12,10 +12,11 @@ import json
 import logging
 import os
 import tempfile
+from typing import Any
 
 log = logging.getLogger("keepassxc_falkon")
 
-DEFAULT_OPTIONS = {
+DEFAULT_OPTIONS: dict[str, Any] = {
     # Ask KeePassXC to show its unlock dialog when a page has a login
     # form and the database is locked.
     "unlock_on_login_form": True,
@@ -34,12 +35,12 @@ DEFAULT_OPTIONS = {
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         self.path = path
-        self._data = {"associations": {}, "options": {}}
+        self._data: dict[str, dict[str, Any]] = {"associations": {}, "options": {}}
         self._load()
 
-    def _load(self):
+    def _load(self) -> None:
         try:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -52,7 +53,7 @@ class Store:
             self._data["associations"] = dict(data.get("associations") or {})
             self._data["options"] = dict(data.get("options") or {})
 
-    def _save(self):
+    def _save(self) -> None:
         directory = os.path.dirname(self.path) or "."
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory, prefix=".keepassxc-", suffix=".json")
@@ -67,30 +68,31 @@ class Store:
 
     # --- associations -------------------------------------------------
 
-    def associations(self):
+    def associations(self) -> dict[str, dict[str, str]]:
         """``{database_hash: {"id": ..., "key": ...}}``"""
         return dict(self._data["associations"])
 
-    def association(self, db_hash):
-        return self._data["associations"].get(db_hash)
+    def association(self, db_hash: str) -> dict[str, str] | None:
+        assoc: dict[str, str] | None = self._data["associations"].get(db_hash)
+        return assoc
 
-    def set_association(self, db_hash, assoc_id, key):
+    def set_association(self, db_hash: str, assoc_id: str, key: str) -> None:
         self._data["associations"][db_hash] = {"id": assoc_id, "key": key}
         self._save()
 
-    def remove_association(self, db_hash):
+    def remove_association(self, db_hash: str) -> None:
         if self._data["associations"].pop(db_hash, None) is not None:
             self._save()
 
-    def clear_associations(self):
+    def clear_associations(self) -> None:
         self._data["associations"] = {}
         self._save()
 
     # --- options ------------------------------------------------------
 
-    def option(self, name):
+    def option(self, name: str) -> Any:
         return self._data["options"].get(name, DEFAULT_OPTIONS[name])
 
-    def set_option(self, name, value):
+    def set_option(self, name: str, value: Any) -> None:
         self._data["options"][name] = value
         self._save()

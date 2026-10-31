@@ -18,5 +18,7 @@ def test_host_key_matches_falkon_create_host():
 def test_origin_and_scheme():
     assert origin(QUrl("https://example.com/a?b#c")) == "https://example.com"
     assert origin(QUrl("http://localhost:3000/")) == "http://localhost:3000"
-    assert is_web(QUrl("https://x.org")) and is_web(QUrl("http://x.org"))
-    assert not is_web(QUrl("file:///etc/passwd")) and not is_web(QUrl("about:blank"))
+    assert is_web(QUrl("https://x.org"))
+    assert is_web(QUrl("http://x.org"))
+    assert not is_web(QUrl("file:///etc/passwd"))
+    assert not is_web(QUrl("about:blank"))

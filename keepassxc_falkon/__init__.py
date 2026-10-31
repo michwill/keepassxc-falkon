@@ -14,9 +14,8 @@
 try:
     import Falkon
 except ModuleNotFoundError:
-    Falkon = None
-
-if Falkon is not None:
+    pass
+else:
     from .plugin import KeePassXCPlugin
 
     plugin = KeePassXCPlugin()

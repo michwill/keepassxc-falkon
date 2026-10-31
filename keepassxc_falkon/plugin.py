@@ -6,6 +6,7 @@ import os
 import Falkon
 from PySide6 import QtCore
 from PySide6.QtWebEngineCore import QWebEngineScript
+from PySide6.QtWidgets import QMenu, QWidget
 
 from .backend import BACKEND_ID, KeePassXCBackend
 from .bridge import Bridge
@@ -30,7 +31,7 @@ _BRIDGE_ID = "keepassxc"     # window.external.extra.keepassxc in SafeJsWorld
 
 
 class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
-    def init(self, state, settingsPath):
+    def init(self, state: Falkon.PluginInterface.InitState, settingsPath: str) -> None:
         if os.environ.get("KEEPASSXC_FALKON_DEBUG"):
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("keepassxc_falkon: %(levelname)s %(message)s"))
@@ -52,7 +53,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
 
         self.entries_menu = EntriesMenu(self.client, self.filler, self.store, self.showSettings)
         self._place_button_once()
-        self._buttons = {}
+        self._buttons: dict[Falkon.BrowserWindow, KeePassXCButton] = {}
         app.plugins().mainWindowCreated.connect(self._add_button)
         app.plugins().mainWindowDeleted.connect(self._remove_button)
         for window in app.windows():     # enabled at runtime: windows already open
@@ -70,7 +71,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         if pm.activeBackend().name() == self.backend.name():
             self.client.status()     # connect early so the first lookup is quick
 
-    def unload(self):
+    def unload(self) -> None:
         app = Falkon.MainApplication.instance()
         for window in list(self._buttons):
             self._remove_button(window)
@@ -78,15 +79,15 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         Falkon.ExternalJsObject.unregisterExtraObject(self.bridge)
         self._remove_scripts()
 
-    def testPlugin(self):
+    def testPlugin(self) -> bool:
         return True
 
-    def showSettings(self, parent=None):
+    def showSettings(self, parent: QWidget | None = None) -> None:
         SettingsDialog(self.client, self.store, parent, on_passkeys_toggled=self.install_scripts).exec()
 
     # --- right-click menu on form fields --------------------------------
 
-    def populateWebViewMenu(self, menu, view, r):
+    def populateWebViewMenu(self, menu: QMenu, view: Falkon.WebView, r: Falkon.WebHitTestResult) -> None:
         # Falkon's hit test looks only at the top document: a field inside an
         # iframe reports the <iframe> element itself.
         if (r.isContentEditable() or r.tagName() == "iframe") and is_web(view.url()):
@@ -94,30 +95,34 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
 
     # --- toolbar buttons (one per window) -------------------------------
 
-    def _place_button_once(self):
+    def _place_button_once(self) -> None:
         """Falkon shows a plugin's button only if the toolbar layout lists it.
         Add ours once (before the tools menu); windows created from now on
         pick it up — at startup, that's all of them."""
         if self.store.option("toolbar_button_placed"):
             return
         settings = Falkon.Settings.globalSettings()
-        layout = settings.value("NavigationBar/Layout") or list(_DEFAULT_TOOLBAR)
-        if isinstance(layout, str):
-            layout = [layout]
+        saved = settings.value("NavigationBar/Layout")     # a list, a lone string, or unset
+        if isinstance(saved, str):
+            layout = [saved]
+        elif isinstance(saved, list) and saved:
+            layout = [str(item) for item in saved]
+        else:
+            layout = list(_DEFAULT_TOOLBAR)
         if KeePassXCButton.ID not in layout:
             at = layout.index("button-tools") if "button-tools" in layout else len(layout)
             layout.insert(at, KeePassXCButton.ID)
             settings.setValue("NavigationBar/Layout", layout)
         self.store.set_option("toolbar_button_placed", True)
 
-    def _add_button(self, window):
+    def _add_button(self, window: Falkon.BrowserWindow) -> None:
         if window in self._buttons:
             return
         button = KeePassXCButton(self.entries_menu, self.client, self.filler)
         window.navigationBar().addToolButton(button)
         self._buttons[window] = button
 
-    def _remove_button(self, window):
+    def _remove_button(self, window: Falkon.BrowserWindow) -> None:
         button = self._buttons.pop(window, None)
         if button is not None:
             window.navigationBar().removeToolButton(button)
@@ -125,17 +130,17 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
     # --- scripts --------------------------------------------------------
 
     @staticmethod
-    def _read(name):
+    def _read(name: str) -> str:
         with open(os.path.join(_DIR, name), encoding="utf-8") as f:
             return f.read()
 
-    def _remove_scripts(self):
+    def _remove_scripts(self) -> None:
         scripts = Falkon.MainApplication.instance().webProfile().scripts()
         for name in (_FILL_SCRIPT, _PASSKEYS_SCRIPT):
             for script in scripts.find(name):
                 scripts.remove(script)
 
-    def install_scripts(self):
+    def install_scripts(self) -> None:
         """fill.js in Falkon's isolated world; passkeys.js, if enabled, in the
         page's own world. Both at document creation, before site scripts
         run, in every frame. Applies to pages loaded from now on."""
@@ -153,7 +158,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
             script.setRunsOnSubFrames(True)
             scripts.insert(script)
 
-    def _inject_into_open_pages(self):
+    def _inject_into_open_pages(self) -> None:
         # Enabled at runtime: pages already open won't run the profile scripts
         # until they navigate. fill.js is idempotent, so just run it there
         # (passkeys need the page reloaded: they must precede site scripts).

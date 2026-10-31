@@ -1,30 +1,43 @@
 """The plugin's settings dialog (Preferences → Extensions, or the backend's
 settings button under Preferences → Passwords)."""
 
+from collections.abc import Callable
+
 import Falkon
 import shiboken6
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QSpinBox, QVBoxLayout,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .backend import BACKEND_ID
+from .protocol import KeePassXCClient
+from .store import Store
 
 ICON_SIZE = 16
 
 
-def _icon(ok):
-    if ok is None:
-        name = "dialog-question"
-    else:
-        name = "dialog-ok-apply" if ok else "dialog-warning"
-    return QIcon.fromTheme(name).pixmap(ICON_SIZE, ICON_SIZE)
+_STATUS_ICONS = {None: "dialog-question", True: "dialog-ok-apply", False: "dialog-warning"}
+
+
+def _icon(ok: bool | None) -> QPixmap:
+    return QIcon.fromTheme(_STATUS_ICONS[ok]).pixmap(ICON_SIZE, ICON_SIZE)
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, client, store, parent=None, on_passkeys_toggled=None):
+    def __init__(self, client: KeePassXCClient, store: Store, parent: QWidget | None = None,
+                 on_passkeys_toggled: Callable[[], None] | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._store = store
@@ -33,7 +46,7 @@ class SettingsDialog(QDialog):
 
         status = QGroupBox("Status")
         grid = QGridLayout(status)
-        self._rows = {}
+        self._rows: dict[str, tuple[QLabel, QLabel]] = {}
         for i, key in enumerate(("running", "database", "connection", "backend")):
             icon, text = QLabel(), QLabel()
             text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -66,7 +79,7 @@ class SettingsDialog(QDialog):
         self._passkeys_opt = QCheckBox("Use KeePassXC for passkeys (applies to pages loaded afterwards)")
         self._passkeys_opt.setChecked(store.option("passkeys"))
 
-        def toggle_passkeys(on):
+        def toggle_passkeys(on: bool) -> None:
             store.set_option("passkeys", on)
             if on_passkeys_toggled is not None:
                 on_passkeys_toggled()
@@ -113,19 +126,19 @@ class SettingsDialog(QDialog):
         self._render()
         self._refresh()
 
-    def done(self, result):
+    def done(self, result: int) -> None:
         self._client.stateChanged.disconnect(self._render)
         super().done(result)
 
-    def _refresh(self, *_):
+    def _refresh(self, *_: object) -> None:
         self._client.status(callback=lambda _job: self._render())
 
-    def _set(self, key, ok, text):
+    def _set(self, key: str, ok: bool | None, text: str) -> None:
         icon, label = self._rows[key]
         icon.setPixmap(_icon(ok))
         label.setText(text)
 
-    def _render(self):
+    def _render(self) -> None:
         c = self._client
         if c.running is None:
             self._set("running", None, "KeePassXC: checking…")
@@ -160,10 +173,10 @@ class SettingsDialog(QDialog):
         count = len(self._store.associations())
         self._saved.setText(f"Saved database connections: {count}")
 
-    def _password_manager(self):
+    def _password_manager(self) -> Falkon.PasswordManager:
         return Falkon.MainApplication.instance().autoFill().passwordManager()
 
-    def _active_backend(self):
+    def _active_backend(self) -> str | None:
         pm = self._password_manager()
         active = shiboken6.getCppPointer(pm.activeBackend())[0]
         for backend_id, backend in pm.availableBackends().items():
@@ -171,10 +184,10 @@ class SettingsDialog(QDialog):
                 return backend_id
         return None
 
-    def _use_backend(self):
+    def _use_backend(self) -> None:
         self._password_manager().switchBackend(BACKEND_ID)
         self._render()
 
-    def _forget(self):
+    def _forget(self) -> None:
         self._client.forget_associations()
         self._render()
