@@ -12,7 +12,7 @@ from PySide6.QtWebEngineCore import QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMenu, QWidget
 
-from .backend import BACKEND_ID, KeePassXCBackend
+from .backend import BACKEND_ID, KeePassXCBackend, notify
 from .bridge import Bridge
 from .filler import SAFE_WORLD, Filler, frames_of, web_views
 from .menus import EntriesMenu, KeePassXCButton, app_icon
@@ -72,7 +72,9 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
             self._inject_into_open_pages()
 
         self.entries_menu = EntriesMenu(self.client, self.filler, self.store, self.showSettings)
-        self._place_button_once()
+        if self._place_button_once() and state == Falkon.PluginInterface.LateInitState:
+            # Open windows read their toolbar layout when they were created.
+            notify("The KeePassXC toolbar button appears after you restart Falkon (or add it with Configure Toolbar).")
         self._buttons: dict[Falkon.BrowserWindow, KeePassXCButton] = {}
         self._shortcuts: dict[Falkon.BrowserWindow, QShortcut] = {}
         app.plugins().mainWindowCreated.connect(self._add_button)
@@ -122,12 +124,12 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
 
     # --- toolbar buttons (one per window) -------------------------------
 
-    def _place_button_once(self) -> None:
+    def _place_button_once(self) -> bool:
         """Falkon shows a plugin's button only if the toolbar layout lists it.
         Add ours once (before the tools menu); windows created from now on
         pick it up — at startup, that's all of them."""
         if self.store.option("toolbar_button_placed"):
-            return
+            return False
         settings = Falkon.Settings.globalSettings()
         saved = settings.value("NavigationBar/Layout")  # a list, a lone string, or unset
         if isinstance(saved, str):
@@ -141,6 +143,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
             layout.insert(at, KeePassXCButton.ID)
             settings.setValue("NavigationBar/Layout", layout)
         self.store.set_option("toolbar_button_placed", True)
+        return True
 
     def _add_button(self, window: Falkon.BrowserWindow) -> None:
         if window in self._buttons:

@@ -156,6 +156,13 @@ window.startLogin = function (allow) {
     "/passkey-frame": """<!doctype html><title>passkey frame</title>
 <iframe id="f" src="http://127.0.0.1:{port}/passkey"
         allow="publickey-credentials-get *; publickey-credentials-create *"></iframe>""",
+    # Like business.holyheld.com: just the account (email) now, a passkey next.
+    "/identifier": """<!doctype html><title>identifier</title><form>
+  <input type="email" id="ui-input-v-2" autocomplete="email" placeholder="a@work.com">
+  <button type="submit">Sign In</button>
+</form>""",
+    # A field nothing marks as a login field: only an explicit fill uses it.
+    "/bare": """<!doctype html><title>bare</title><div><input type="text" id="who"></div>""",
     "/plain": """<!doctype html><title>plain</title><p>No login form here.</p>""",
     "/frame": """<!doctype html><title>frame</title><p>top</p>
 <iframe id="f" src="http://127.0.0.1:{port}/classic" width="500" height="200"></iframe>""",
@@ -660,6 +667,23 @@ def run_checks(h):
             ),
             what="filled shadow-DOM fields",
         )
+
+    @check("identifier-first page (email field only) is filled on load")
+    def _():
+        h.navigate(single("/identifier"))
+        wait_until(
+            lambda: h.main_eval("document.getElementById('ui-input-v-2').value") == "alice",
+            what="email filled",
+        )
+
+    @check("explicit fill uses the focused field when no login form is recognised")
+    def _():
+        h.navigate(single("/bare"))
+        time.sleep(1.5)
+        assert h.main_eval("document.getElementById('who').value") == "", "not filled on load"
+        h.main_eval("document.getElementById('who').focus()")
+        h.probe("pressFillShortcut", obj="kpxcui")
+        wait_until(lambda: h.main_eval("document.getElementById('who').value") == "alice", what="focused field filled")
 
     @check("a page without login fields doesn't query KeePassXC")
     def _():

@@ -64,6 +64,14 @@
     return visible(el);
   }
 
+  // Does a lone field look like where the account name goes?
+  function looksLikeUsername(el) {
+    if (/\b(username|email|webauthn)\b/.test(attr(el, "autocomplete"))) return true;
+    if (attr(el, "type") === "email") return true;
+    return USER_HINT.test([el.name, el.id, el.getAttribute("placeholder"),
+                           el.getAttribute("aria-label")].join(" "));
+  }
+
   function scopeOf(el) {
     return el.form || el.getRootNode();
   }
@@ -102,14 +110,17 @@
       });
     });
 
-    // Identifier-first sign-in (username now, password on the next step):
-    // only where no password field shares the scope (not a sign-up form).
+    // Identifier-first sign-in (the account name now; a password or a
+    // passkey on the next step): a field marked as the username, or the only
+    // username-like field of its form (or page) — never where a password
+    // field shares the scope, which is a sign-up or change-password form.
     if (!groups.length) {
       var lone = users.filter(function (u) {
-        if (scopes.some(function (s) { return s.scope === scopeOf(u); })) return false;
-        if (/username/.test(attr(u, "autocomplete"))) return true;
-        return u.form && USER_HINT.test((u.name || "") + " " + (u.id || "")) &&
-          users.filter(function (v) { return v.form === u.form; }).length === 1;
+        var scope = scopeOf(u);
+        if (scopes.some(function (s) { return s.scope === scope; })) return false;
+        if (/\b(username|webauthn)\b/.test(attr(u, "autocomplete"))) return true;
+        var alone = users.filter(function (v) { return scopeOf(v) === scope; }).length === 1;
+        return alone && looksLikeUsername(u);
       });
       if (lone.length) groups.push({ user: lone[0], pass: null });
     }
@@ -129,9 +140,25 @@
     return true;
   }
 
+  function focusedInput() {
+    var e = document.activeElement;
+    while (e && e.shadowRoot && e.shadowRoot.activeElement) e = e.shadowRoot.activeElement;
+    return e && e.localName === "input" ? e : null;
+  }
+
   function fill(creds) {
     var any = false;
-    findLogins().forEach(function (g) {
+    var groups = findLogins();
+    // Asked for explicitly but no login form recognised: the focused field.
+    if (!groups.length && creds.overwrite) {
+      var focused = focusedInput();
+      if (focused && attr(focused, "type") === "password" && visible(focused)) {
+        groups = [{ user: null, pass: focused }];
+      } else if (focused && isUsername(focused)) {
+        groups = [{ user: focused, pass: null }];
+      }
+    }
+    groups.forEach(function (g) {
       if (g.user && creds.username) any = setValue(g.user, creds.username, creds.overwrite) || any;
       if (g.pass && creds.password) any = setValue(g.pass, creds.password, creds.overwrite) || any;
     });
