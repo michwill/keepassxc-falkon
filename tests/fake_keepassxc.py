@@ -45,8 +45,10 @@ class FakeKeePassXC:
         self.logins_delay = 0.0        # seconds — an access-confirm dialog
         self.unlock_requests = 0
         self.received = []             # (action, inner message or None)
+        self.received_at = []          # time.time() of each, same order
         self.unencrypted_nested = False
         self.coalesce_next = None      # a message to glue in front of the next reply
+        self.passkey_response = {"errorCode": 15}   # what passkeys-get/-register answer
         self._clients = {}             # clientID -> state
         self._conns = []
         self._lock = threading.Lock()
@@ -83,6 +85,7 @@ class FakeKeePassXC:
 
     def clear_received(self):
         self.received.clear()
+        self.received_at.clear()
 
     def set_entry_password(self, index, password):
         self.entries[index]["password"] = password
@@ -130,7 +133,9 @@ class FakeKeePassXC:
             if len(pieces) > 2 or pieces[-1].strip():
                 self.unencrypted_nested = True
             message = json.loads(data)
+            count = len(self.received)
             reply = self._process(message)
+            self.received_at += [time.time()] * (len(self.received) - count)
             if reply:
                 data = json.dumps(reply).encode()
                 if self.coalesce_next is not None:
@@ -219,6 +224,11 @@ class FakeKeePassXC:
             if entry is None:
                 return self._error(action, 18)
             return respond(totp=entry.get("totp") or "")
+
+        if action in ("passkeys-get", "passkeys-register"):
+            if not state["associated"]:
+                return self._error(action, 8)
+            return respond(response=self.passkey_response)
 
         if action == "set-login":
             if not state["associated"]:

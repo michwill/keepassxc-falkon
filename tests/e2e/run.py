@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """End-to-end test: the plugin inside a real Falkon, talking to a real KeePassXC.
 
-Isolated from the user's session throughout: a throwaway KeePassXC database
-and Falkon profile in a work dir, private HOME / XDG_* / TMPDIR, a private
-XDG_RUNTIME_DIR (where KeePassXC puts its browser socket), a private D-Bus
-session (neither app registers on — or shows notifications through — the
-user's bus), and Qt's offscreen platform (nothing appears on screen).
+Sealed off from the user's desktop session at the kernel level, not just by
+environment variables (KeePassXC, for one, connects to the *system* bus at a
+hard-coded path for Polkit "quick unlock", which put a Polkit prompt on the
+user's screen before this was sandboxed). Three stages:
+
+1. outer — makes a work dir and starts everything else under bubblewrap:
+   its own network namespace (no abstract sockets: not the user's X server
+   or buses), private /tmp and /run (no X/D-Bus/KeePassXC sockets, no system
+   bus, so no Polkit), the real filesystem read-only, the work dir writable,
+   and a cleared environment: fake HOME / XDG_* / TMPDIR plus an allowlist.
+2. sandbox — inside bubblewrap: starts a virtual X display (Xvfb) and a
+   private D-Bus session.
+3. inner — runs the throwaway KeePassXC (on the virtual display, so the test
+   can press keys in its dialogs; Quick Unlock off) and Falkon (offscreen),
+   and drives them.
 
     .venv/bin/python tests/e2e/run.py [--workdir DIR] [--keep]
 
@@ -30,17 +40,31 @@ import time
 import urllib.request
 
 import websocket
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_der_public_key
 from lxml import etree
-from pykeepass import create_database
+from pykeepass import PyKeePass, create_database
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 from keepassxc_falkon import sodium  # noqa: E402
+from keepassxc_falkon.webauthn import attested_auth_data  # noqa: E402
+from tests.e2e.xkeys import XDisplay  # noqa: E402
 
 DB_PASSWORD = "e2e-password"
 ASSOC_ID = "falkon-e2e"
 TOTP_SECRET = "JBSWY3DPEHPK3PXP"
-FALKON_VERSION = subprocess.run(["falkon", "--version"], capture_output=True, text=True).stdout.split()[-1]
+PASSKEY_DIALOG = "KeePassXC - Passkey credentials"
+# That dialog's default button is Cancel; from its initial focus, Shift+Tab
+# wraps round to Register/Authenticate.
+CONFIRM = ("shift+Tab", "space")
+# Carried into the sandbox; everything else stays behind (see the docstring).
+_PASS_ENV = {"PATH", "LANG", "LANGUAGE", "TERM", "USER", "LOGNAME", "SHELL", "TZ"}
+_SANDBOX_RUNTIME = "/run/kpxc-e2e"
+# Must not exist inside: their presence means the sandbox leaked.
+_SESSION_ENV = ("WAYLAND_DISPLAY", "XAUTHORITY", "SESSION_MANAGER", "SSH_AUTH_SOCK", "XDG_SESSION_ID",
+                "XDG_CURRENT_DESKTOP", "KDE_FULL_SESSION", "GNOME_KEYRING_CONTROL", "GPG_AGENT_INFO")
 
 PAGES = {
     "/classic": """<!doctype html><title>classic</title>
@@ -71,6 +95,57 @@ customElements.define('x-login', class extends HTMLElement {
   <input type="password" name="pw" autocomplete="new-password">
   <input type="password" name="pw2" autocomplete="new-password">
 </form>""",
+    # A minimal relying party: the test drives startRegister/startLogin and
+    # verifies what comes back in Python, as a site's server would.
+    "/passkey": """<!doctype html><title>passkey</title><script>
+function b64u(buf) {
+  var b = new Uint8Array(buf), s = "";
+  for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+}
+function unb64u(t) {
+  t = t.replace(/-/g, "+").replace(/_/g, "/"); while (t.length % 4) t += "=";
+  var s = atob(t), out = new Uint8Array(s.length);
+  for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+window.rp = {};
+window.startRegister = function (exclude, rpName) {
+  var challenge = crypto.getRandomValues(new Uint8Array(32));
+  var userId = crypto.getRandomValues(new Uint8Array(16));
+  rp.regChallenge = b64u(challenge); rp.userId = b64u(userId); rp.reg = null;
+  navigator.credentials.create({publicKey: {
+    challenge: challenge, rp: {name: rpName || "E2E RP", id: "localhost"},
+    user: {id: userId, name: "erin@localhost", displayName: "Erin"},
+    pubKeyCredParams: [{type: "public-key", alg: -7}],
+    excludeCredentials: exclude ? [{type: "public-key", id: unb64u(exclude)}] : [],
+    authenticatorSelection: {residentKey: "required", userVerification: "preferred"},
+    timeout: 60000}}).then(function (c) {
+      rp.reg = {ok: true, instance: c instanceof PublicKeyCredential,
+                responseInstance: c.response instanceof AuthenticatorAttestationResponse,
+                id: c.id, rawIdMatches: b64u(c.rawId) === c.id, json: c.toJSON(),
+                publicKey: b64u(c.response.getPublicKey()), alg: c.response.getPublicKeyAlgorithm(),
+                authenticatorData: b64u(c.response.getAuthenticatorData()),
+                transports: c.response.getTransports(), extensions: c.getClientExtensionResults()};
+    }, function (e) { rp.reg = {ok: false, name: e.name, message: e.message}; });
+};
+window.startLogin = function (allow) {
+  var challenge = crypto.getRandomValues(new Uint8Array(32));
+  rp.loginChallenge = b64u(challenge); rp.login = null;
+  navigator.credentials.get({publicKey: {
+    challenge: challenge, rpId: "localhost", userVerification: "preferred", timeout: 60000,
+    allowCredentials: allow ? [{type: "public-key", id: unb64u(allow)}] : []}}).then(function (c) {
+      rp.login = {ok: true, instance: c instanceof PublicKeyCredential,
+                  responseInstance: c.response instanceof AuthenticatorAssertionResponse,
+                  id: c.id, json: c.toJSON(), clientDataJSON: b64u(c.response.clientDataJSON),
+                  authenticatorData: b64u(c.response.authenticatorData),
+                  signature: b64u(c.response.signature),
+                  userHandle: c.response.userHandle ? b64u(c.response.userHandle) : null};
+    }, function (e) { rp.login = {ok: false, name: e.name, message: e.message}; });
+};
+</script>""",
+    "/passkey-frame": """<!doctype html><title>passkey frame</title>
+<iframe id="f" src="http://127.0.0.1:{port}/passkey" allow="publickey-credentials-get *; publickey-credentials-create *"></iframe>""",
     "/plain": """<!doctype html><title>plain</title><p>No login form here.</p>""",
     "/frame": """<!doctype html><title>frame</title><p>top</p>
 <iframe id="f" src="http://127.0.0.1:{port}/classic" width="500" height="200"></iframe>""",
@@ -105,6 +180,8 @@ def build_database(path, port):
     alice.otp = f"otpauth://totp/Single:alice?secret={TOTP_SECRET}&period=30&digits=6&issuer=Single"
     kp.add_entry(root, "Multi B", "bob", "pw-bob", url=f"http://127.0.0.2:{port}/")
     kp.add_entry(root, "Multi C", "carol", "pw-carol", url=f"http://127.0.0.2:{port}/")
+    # Where KeePassXC files new passkeys; present, so it doesn't ask to create it.
+    kp.add_group(root, "KeePassXC-Browser Passkeys")
     # Pre-approved browser association, as KeePassXC stores it after the user
     # names the connection in its dialog (CustomData "KPXC_BROWSER_<id>").
     id_key, _ = sodium.keypair()
@@ -224,6 +301,64 @@ def wait_until(predicate, timeout=8.0, interval=0.2, what="condition"):
 
 # --- the run -------------------------------------------------------------------
 
+def sandbox_env(workdir):
+    home = os.path.join(workdir, "home")
+    env = {k: v for k, v in os.environ.items() if k in _PASS_ENV or k.startswith("LC_")}
+    env.update(
+        HOME=home,
+        XDG_CONFIG_HOME=os.path.join(home, ".config"),
+        XDG_DATA_HOME=os.path.join(home, ".local", "share"),
+        XDG_CACHE_HOME=os.path.join(home, ".cache"),
+        XDG_STATE_HOME=os.path.join(home, ".local", "state"),
+        XDG_RUNTIME_DIR=_SANDBOX_RUNTIME,
+        TMPDIR=os.path.join(workdir, "tmp"),
+        KPXC_E2E_WORKDIR=workdir,
+        KPXC_E2E_STAGE="sandbox",
+        # Chromium's own sandbox can't nest inside bubblewrap; the pages are local.
+        QTWEBENGINE_DISABLE_SANDBOX="1",
+    )
+    for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMPDIR"):
+        os.makedirs(env[key], exist_ok=True)
+    return env
+
+
+def bwrap_command(workdir, env, argv):
+    cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/dev/shm",
+           "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/var/tmp",
+           "--perms", "0700", "--dir", _SANDBOX_RUNTIME,
+           "--bind", workdir, workdir,
+           "--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
+    for key, value in env.items():
+        cmd += ["--setenv", key, value]
+    return cmd + ["--", *argv]
+
+
+def start_xvfb():
+    read_fd, write_fd = os.pipe()
+    proc = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
+                            pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.close(write_fd)
+    with os.fdopen(read_fd) as f:
+        number = f.readline().strip()
+    if not number:
+        proc.kill()
+        raise RuntimeError("Xvfb didn't start")
+    return proc, ":" + number
+
+
+def check_sandboxed(workdir):
+    """Refuse to run the apps outside the sandbox the outer stages built."""
+    problems = [k for k in _SESSION_ENV if k in os.environ]
+    if not os.environ.get("HOME", "").startswith(workdir):
+        problems.append("HOME")
+    if os.path.exists("/run/dbus/system_bus_socket"):
+        problems.append("system bus reachable")
+    if os.environ.get("XDG_RUNTIME_DIR") != _SANDBOX_RUNTIME or "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+        problems.append("runtime dir / session bus")
+    if problems:
+        raise SystemExit(f"not sandboxed ({', '.join(problems)}); run tests/e2e/run.py directly")
+
+
 class Harness:
     def __init__(self, workdir):
         self.work = workdir
@@ -231,23 +366,15 @@ class Harness:
         self.cdp_port = free_port()
         self.procs = []
         self.servers = []
-        self.runtime = tempfile.mkdtemp(prefix="kpxc-e2e-", dir=os.environ.get("XDG_RUNTIME_DIR"))
-        home = os.path.join(workdir, "home")
+        self.runtime = os.environ["XDG_RUNTIME_DIR"]
+        self.x_display = os.environ["DISPLAY"]
         self.env = dict(
             os.environ,
-            HOME=home,
-            XDG_CONFIG_HOME=os.path.join(home, ".config"),
-            XDG_DATA_HOME=os.path.join(home, ".local", "share"),
-            XDG_CACHE_HOME=os.path.join(home, ".cache"),
-            XDG_RUNTIME_DIR=self.runtime,
-            TMPDIR=os.path.join(workdir, "tmp"),
             QT_QPA_PLATFORM="offscreen",
             QTWEBENGINE_REMOTE_DEBUGGING=f"127.0.0.1:{self.cdp_port}",
             PYTHONDONTWRITEBYTECODE="1",
             KEEPASSXC_FALKON_DEBUG="1",
         )
-        for d in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR"):
-            os.makedirs(self.env[d], exist_ok=True)
         self.db_path = os.path.join(workdir, "e2e.kdbx")
 
     def url(self, host, path):
@@ -256,15 +383,22 @@ class Harness:
     def setup(self):
         self.db_hash, key_b64 = build_database(self.db_path, self.port)
         cfg = self.env["XDG_CONFIG_HOME"]
-        write(os.path.join(cfg, "keepassxc", "keepassxc.ini"), "\n".join([
+        self.kpxc_config = os.path.join(cfg, "keepassxc", "keepassxc.ini")
+        self.kpxc_local_config = os.path.join(self.env["XDG_CACHE_HOME"], "keepassxc", "keepassxc.ini")
+        # Quick Unlock asks Polkit (system bus) instead of the password; off.
+        write(self.kpxc_local_config, "\n".join([
+            "[Security]", "QuickUnlock=false", "LockDatabaseScreenLock=false", ""]))
+        write(self.kpxc_config, "\n".join([
             "[General]", "ConfigVersion=2", "SingleInstance=false", "RememberLastDatabases=false",
             "AutoSaveAfterEveryChange=true", "UpdateCheckMessageShown=true",
             "[GUI]", "CheckForUpdates=false", "ShowTrayIcon=false",
             "[Browser]", "Enabled=true", "AlwaysAllowAccess=true", "AlwaysAllowUpdate=true",
-            "UnlockDatabase=true", "UpdateBinaryPath=false",
+            "UnlockDatabase=true", "UpdateBinaryPath=false", "Browser_AllowLocalhostWithPasskeys=true",
             "[FdoSecrets]", "Enabled=false", "[SSHAgent]", "Enabled=false", ""]))
         profile = os.path.join(cfg, "falkon", "profiles", "e2e")
-        write(os.path.join(profile, "version"), FALKON_VERSION + "\n")
+        version = subprocess.run(["falkon", "--version"], env=self.env, capture_output=True,
+                                 text=True).stdout.split()[-1]
+        write(os.path.join(profile, "version"), version + "\n")
         write(os.path.join(profile, "settings.ini"), "\n".join([
             "[Plugin-Settings]", "AllowedPlugins=python:keepassxc_falkon, python:kpxc_e2e_probe",
             "[PasswordManager]", "Backend=keepassxc",
@@ -281,8 +415,14 @@ class Harness:
             self.servers.append(serve(host, self.port))
 
     def start(self):
+        # KeePassXC goes on the sandbox's virtual display, so the test can
+        # press keys in its passkey dialogs; Falkon stays offscreen.
+        self.x = XDisplay(self.x_display)
+        kpxc_env = dict(self.env, QT_QPA_PLATFORM="xcb")
+
         log = open(os.path.join(self.work, "keepassxc.log"), "w")
-        kpxc = subprocess.Popen(["keepassxc", "--pw-stdin", self.db_path], env=self.env,
+        kpxc = subprocess.Popen(["keepassxc", "--config", self.kpxc_config, "--localconfig", self.kpxc_local_config,
+                                 "--pw-stdin", self.db_path], env=kpxc_env,
                                 stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, text=True)
         kpxc.stdin.write(DB_PASSWORD + "\n")
         kpxc.stdin.close()
@@ -307,12 +447,19 @@ class Harness:
         self.cdp.call("Page.enable")
         self.cdp.call("Runtime.enable")
 
+    def unlock(self):
+        """Unlock the way a user does: type the password into the dialog
+        KeePassXC showed when the plugin asked it to unlock."""
+        self.x.type_text("Unlock Database - KeePassXC", DB_PASSWORD)
+
     def dbus(self, method, *args):
         cmd = ["dbus-send", "--session", "--print-reply", "--dest=org.keepassxc.KeePassXC.MainWindow",
                "/keepassxc", f"org.keepassxc.KeePassXC.MainWindow.{method}", *args]
         return subprocess.run(cmd, env=self.env, capture_output=True, text=True, check=True).stdout
 
     def stop(self):
+        if getattr(self, "x", None) is not None:
+            self.x.close()
         for proc in reversed(self.procs):
             proc.terminate()
             try:
@@ -321,7 +468,6 @@ class Harness:
                 proc.kill()
         for server in self.servers:
             server.shutdown()
-        shutil.rmtree(self.runtime, ignore_errors=True)
 
     # --- helpers for checks ---
 
@@ -548,7 +694,7 @@ def run_checks(h):
         h.navigate(single("/classic"))
         time.sleep(2)
         assert fields(h, "input[name=user]", "input[name=pass]") == ["", ""]
-        h.dbus("openDatabase", f"string:{h.db_path}", f"string:{DB_PASSWORD}")
+        h.unlock()
         wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"],
                    timeout=10, what="fill after unlock")
 
@@ -560,10 +706,159 @@ def run_checks(h):
         time.sleep(1)
         h.probe("addEntry", url, "erin", "pw-erin")
         time.sleep(1.5)
-        h.dbus("openDatabase", f"string:{h.db_path}", f"string:{DB_PASSWORD}")
+        h.unlock()
         wait_until(lambda: ("erin", "pw-erin") in
                    [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))],
                    timeout=10, what="deferred save")
+
+    passkey_url = h.url("localhost", "/passkey")
+    origin = f"http://localhost:{h.port}"
+    rp_id_hash = hashlib.sha256(b"localhost").digest()
+    stash = {}
+
+    def b64u(text):
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+    def rp_result(name, timeout=20):
+        return wait_until(lambda: h.main_eval(f"rp.{name}"), timeout=timeout, what=f"rp.{name}")
+
+    @check("passkeys: the page sees a platform authenticator, no conditional UI")
+    def _():
+        h.navigate(passkey_url)
+        got = h.cdp.evaluate("Promise.all([PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),"
+                             "PublicKeyCredential.isConditionalMediationAvailable()])", await_promise=True)
+        assert got == [True, False], got
+        aborted = h.cdp.evaluate(
+            "(function(){var c=new AbortController();var p=navigator.credentials.get({mediation:'conditional',"
+            "signal:c.signal,publicKey:{challenge:new Uint8Array(32)}}).then(function(){return 'resolved'},"
+            "function(e){return e.name});c.abort();return p;})()", await_promise=True)
+        assert aborted == "AbortError", aborted
+
+    @check("passkeys: register in KeePassXC (verified like a relying party)")
+    def _():
+        h.navigate(passkey_url)
+        h.main_eval("startRegister()")
+        h.x.press(PASSKEY_DIALOG, *CONFIRM)
+        reg = rp_result("reg")
+        assert reg["ok"], reg
+        assert reg["instance"] and reg["responseInstance"] and reg["rawIdMatches"], reg
+        assert reg["alg"] == -7 and reg["transports"] == ["internal"], reg
+        client_data = json.loads(b64u(reg["json"]["response"]["clientDataJSON"]))
+        assert client_data["type"] == "webauthn.create", client_data
+        assert client_data["challenge"] == h.main_eval("rp.regChallenge"), client_data
+        assert client_data["origin"] == origin, client_data
+        auth_data = b64u(reg["authenticatorData"])
+        assert auth_data[:32] == rp_id_hash, ("rpIdHash", auth_data.hex())
+        assert auth_data[32] & 0x01, ("user present flag", auth_data[32])
+        assert auth_data[32] & 0x40, ("attested credential data flag", auth_data[32])
+        cred_len = int.from_bytes(auth_data[53:55], "big")
+        assert auth_data[55:55 + cred_len] == b64u(reg["id"]), "credential id in authenticator data"
+        assert attested_auth_data(b64u(reg["json"]["response"]["attestationObject"])) == auth_data
+        assert b64u(reg["json"]["response"]["authenticatorData"]) == auth_data, "toJSON vs getter"
+        key = load_der_public_key(b64u(reg["publicKey"]))
+        assert isinstance(key, ec.EllipticCurvePublicKey) and key.curve.name == "secp256r1", key
+        stash.update(id=reg["id"], key=key, user=h.main_eval("rp.userId"))
+
+    @check("passkeys: the passkey is in the database file")
+    def _():
+        def stored():
+            out = subprocess.run(["keepassxc-cli", "show", "-q", "-a", "KPEX_PASSKEY_CREDENTIAL_ID", h.db_path,
+                                  "KeePassXC-Browser Passkeys/E2E RP (Passkey)"],
+                                 input=DB_PASSWORD + "\n", capture_output=True, text=True, env=h.env)
+            return out.stdout.strip() == stash["id"]
+        try:
+            wait_until(stored, timeout=15, interval=1, what="passkey entry on disk")
+        except AssertionError as e:
+            raise AssertionError(f"{e}; KeePassXC windows: {h.x.titles()}") from None
+
+    @check("passkeys: sign in with it (signature verifies)")
+    def _():
+        h.navigate(passkey_url)
+        h.main_eval(f"startLogin({json.dumps(stash['id'])})")
+        h.x.press(PASSKEY_DIALOG, *CONFIRM)
+        login = rp_result("login")
+        assert login["ok"], login
+        assert login["instance"] and login["responseInstance"], login
+        assert login["id"] == stash["id"] and login["userHandle"] == stash["user"], login
+        client_json = b64u(login["clientDataJSON"])
+        client_data = json.loads(client_json)
+        assert client_data["type"] == "webauthn.get", client_data
+        assert client_data["challenge"] == h.main_eval("rp.loginChallenge"), client_data
+        assert client_data["origin"] == origin, client_data
+        auth_data = b64u(login["authenticatorData"])
+        assert auth_data[:32] == rp_id_hash, ("rpIdHash", auth_data.hex())
+        assert auth_data[32] & 0x01, ("user present flag", auth_data[32])
+        stash["key"].verify(b64u(login["signature"]), auth_data + hashlib.sha256(client_json).digest(),
+                            ec.ECDSA(hashes.SHA256()))
+
+    @check("passkeys: discoverable sign-in (no allowCredentials)")
+    def _():
+        h.navigate(passkey_url)
+        h.main_eval("startLogin()")
+        h.x.press(PASSKEY_DIALOG, *CONFIRM)
+        login = rp_result("login")
+        assert login["ok"] and login["id"] == stash["id"], login
+
+    @check("passkeys: cancelling in KeePassXC gives NotAllowedError")
+    def _():
+        h.navigate(passkey_url)
+        h.main_eval(f"startLogin({json.dumps(stash['id'])})")
+        h.x.press(PASSKEY_DIALOG, "Escape")
+        login = rp_result("login")
+        assert not login["ok"] and login["name"] == "NotAllowedError", login
+
+    @check("passkeys: registering an excluded credential gives InvalidStateError")
+    def _():
+        h.navigate(passkey_url)
+        h.main_eval(f"startRegister({json.dumps(stash['id'])})")
+        reg = rp_result("reg")
+        assert not reg["ok"] and reg["name"] == "InvalidStateError", reg
+
+    @check("passkeys: a frame from another site is refused")
+    def _():
+        h.navigate(h.url("localhost", "/passkey-frame"))
+
+        def frame_ctx():
+            children = h.cdp.frame_tree().get("childFrames") or []
+            return children and h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
+
+        ctx = wait_until(frame_ctx, what="iframe context")
+        wait_until(lambda: h.cdp.evaluate("typeof startLogin === 'function'", ctx), what="iframe script")
+        h.cdp.evaluate("startLogin()", ctx)
+        login = wait_until(lambda: h.cdp.evaluate("rp.login", ctx), what="iframe result")
+        assert not login["ok"] and login["name"] == "NotAllowedError", login
+
+    @check("passkeys: a locked database is unlocked, then the request goes through")
+    def _():
+        h.navigate(passkey_url)
+        h.dbus("lockAllDatabases")
+        time.sleep(1)
+        h.main_eval(f"startLogin({json.dumps(stash['id'])})")
+        time.sleep(2)
+        h.unlock()
+        h.x.press(PASSKEY_DIALOG, *CONFIRM)
+        login = rp_result("login")
+        assert login["ok"] and login["id"] == stash["id"], login
+
+    @check("passkeys: registered right after a password save, both reach the file")
+    def _():
+        # KeePassXC loses a change that arrives while it is saving the
+        # previous one; the plugin spaces its writes so this can't happen.
+        h.navigate(passkey_url)
+        h.probe("addEntry", h.url("localhost", "/classic"), "frank", "pw-frank")
+        h.main_eval('startRegister(null, "E2E RP 2")')
+        h.x.press(PASSKEY_DIALOG, *CONFIRM, timeout=20)
+        reg = rp_result("reg", timeout=30)
+        assert reg["ok"], reg
+
+        def both_on_disk():
+            kp = PyKeePass(h.db_path, password=DB_PASSWORD)
+            frank = kp.find_entries(username="frank", first=True)
+            passkey = kp.find_entries(title="E2E RP 2 (Passkey)", first=True)
+            return (frank is not None and frank.password == "pw-frank" and passkey is not None
+                    and passkey.get_custom_property("KPEX_PASSKEY_CREDENTIAL_ID") == reg["id"])
+
+        wait_until(both_on_disk, timeout=20, interval=1, what="password and passkey in the .kdbx file")
 
     return results
 
@@ -573,14 +868,29 @@ def main():
     parser.add_argument("--workdir")
     parser.add_argument("--keep", action="store_true", help="keep the work dir")
     args = parser.parse_args()
+    stage = os.environ.get("KPXC_E2E_STAGE")
+    me = [sys.executable, "-B", os.path.abspath(__file__)] + (["--keep"] if args.keep else [])
 
-    if os.environ.get("KPXC_E2E_PRIVATE_BUS") != "1":
-        # Re-run inside a private D-Bus session.
-        env = dict(os.environ, KPXC_E2E_PRIVATE_BUS="1")
-        return subprocess.call(["dbus-run-session", "--", sys.executable, *sys.argv], env=env)
+    if stage == "inner":
+        return inner(os.environ["KPXC_E2E_WORKDIR"], args.keep)
 
-    workdir = args.workdir or tempfile.mkdtemp(prefix="kpxc-e2e-")
+    if stage == "sandbox":
+        # Inside bubblewrap: a virtual display, then a private session bus.
+        xvfb, display = start_xvfb()
+        try:
+            env = dict(os.environ, DISPLAY=display, KPXC_E2E_STAGE="inner")
+            return subprocess.call(["dbus-run-session", "--", *me], env=env)
+        finally:
+            xvfb.terminate()
+            xvfb.wait(10)
+
+    workdir = os.path.abspath(args.workdir or tempfile.mkdtemp(prefix="kpxc-e2e-"))
     os.makedirs(workdir, exist_ok=True)
+    return subprocess.call(bwrap_command(workdir, sandbox_env(workdir), me))
+
+
+def inner(workdir, keep):
+    check_sandboxed(workdir)
     h = Harness(workdir)
     try:
         h.setup()
@@ -595,7 +905,7 @@ def main():
         print(f"\nFalkon log has {tracebacks} Python traceback(s) — see {h.falkon_log}")
     failed = [r for r in results if not r[1]]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
-    if not args.keep and not failed and not tracebacks:
+    if not keep and not failed and not tracebacks:
         shutil.rmtree(workdir, ignore_errors=True)
     else:
         print(f"work dir kept: {workdir}")

@@ -7,9 +7,16 @@ from PySide6.QtCore import QCoreApplication
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from keepassxc_falkon import protocol  # noqa: E402
 from keepassxc_falkon.protocol import KeePassXCClient  # noqa: E402
 from keepassxc_falkon.store import Store  # noqa: E402
 from tests.fake_keepassxc import FakeProcess  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_write_spacing(monkeypatch):
+    """Tests that need KeePassXC's save-spacing set it themselves."""
+    monkeypatch.setattr(protocol, "WRITE_SPACING_S", 0)
 
 
 @pytest.fixture(scope="session")

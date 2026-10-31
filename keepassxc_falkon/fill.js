@@ -139,25 +139,31 @@
   }
 
   // Only the top frame can reach the plugin: QtWebEngine installs the web
-  // channel there alone. Sub-frames post their report up and the top
-  // frame's isolated world relays it. A page script can see (or forge)
+  // channel there alone. Sub-frames post their messages up and the top
+  // frame's isolated world relays them. A page script can see (or forge)
   // these messages, but they're only hints — the plugin finds the frame
-  // by its real URL and fills only the document holding the token.
+  // by its real URL and answers only the document holding the token.
   var isTop = window.top === window;
-  var pending = [];
+  var queue = [];               // calls waiting for the bridge (top frame)
 
-  function send(msg) {
-    if (bridge) bridge.loginFormFound(msg.token, msg.href, msg.info);
-    else if (pending.length < 20) pending.push(msg);
+  function call(method, args) {
+    if (bridge) bridge[method].apply(bridge, args);
+    else if (queue.length < 20) queue.push([method, args]);
+  }
+
+  function relay(kind, msg, args) {
+    if (isTop) {
+      call(kind, args);
+    } else {
+      var up = {};
+      up[kind === "loginFormFound" ? "__kpxcFalkon" : "__kpxcFalkonPasskey"] = msg;
+      try { window.top.postMessage(up, "*"); } catch (e) { /* detached */ }
+    }
   }
 
   function report(info) {
     var msg = { token: token, href: String(window.location.href), info: JSON.stringify(info) };
-    if (isTop) {
-      send(msg);
-    } else {
-      try { window.top.postMessage({ __kpxcFalkon: msg }, "*"); } catch (e) { /* detached */ }
-    }
+    relay("loginFormFound", msg, [msg.token, msg.href, msg.info]);
   }
 
   function scan() {
@@ -181,14 +187,38 @@
     }
   }
 
+  // Passkeys: passkeys.js (the page's world) posts requests to this window;
+  // add the token and pass them on. The plugin answers only a request this
+  // document really has pending (hasPasskeyRequest), so one forged by
+  // another frame goes nowhere.
+  var passkeyRequests = {};
+  window.addEventListener("message", function (e) {
+    if (e.source !== window) return;
+    var m = e.data && e.data.__kpxcPasskeyRequest;
+    if (!m || typeof m.id !== "string" || typeof m.kind !== "string" || typeof m.options !== "string") return;
+    passkeyRequests[m.id] = true;
+    var msg = { token: token, href: String(window.location.href), id: m.id, kind: m.kind, options: m.options };
+    relay("passkeyRequest", msg, [msg.token, msg.href, msg.id, msg.kind, msg.options]);
+  });
+
   window.__kpxcFalkon = {
     token: token,
     fill: fill,
     // After an unlock: report again so the plugin fills what it now can.
     rescan: function () { reported = new WeakSet(); scan(); },
+    hasPasskeyRequest: function (id) { return passkeyRequests[id] === true; },
+    passkeyResult: function (id, result) {
+      if (passkeyRequests[id] !== true) return false;
+      delete passkeyRequests[id];
+      window.postMessage({ __kpxcPasskeyResponse: { id: id, result: result } }, "*");
+      return true;
+    },
   };
 
+  // Injected at document creation (so it listens before any site script
+  // runs); the fields appear as the document is parsed.
   scan();
+  document.addEventListener("DOMContentLoaded", scan);
   new MutationObserver(scheduleScan).observe(document, {
     childList: true, subtree: true,
     attributes: true, attributeFilter: ["type", "class", "style", "hidden"],
@@ -200,10 +230,15 @@
   if (!isTop) return;
 
   window.addEventListener("message", function (e) {
-    var m = e.data && e.data.__kpxcFalkon;
-    if (m && e.source !== window && typeof m.token === "string" &&
-        typeof m.href === "string" && typeof m.info === "string") {
-      send({ token: m.token, href: m.href, info: m.info });
+    if (e.source === window || !e.data) return;
+    var r = e.data.__kpxcFalkon;
+    if (r && typeof r.token === "string" && typeof r.href === "string" && typeof r.info === "string") {
+      call("loginFormFound", [r.token, r.href, r.info]);
+    }
+    var p = e.data.__kpxcFalkonPasskey;
+    if (p && typeof p.token === "string" && typeof p.href === "string" && typeof p.id === "string" &&
+        typeof p.kind === "string" && typeof p.options === "string") {
+      call("passkeyRequest", [p.token, p.href, p.id, p.kind, p.options]);
     }
   });
 
@@ -212,7 +247,7 @@
     var b = ext && ext.extra && ext.extra.keepassxc;
     if (bridge || !b || typeof b.loginFormFound !== "function") return !!bridge;
     bridge = b;
-    pending.splice(0).forEach(send);
+    queue.splice(0).forEach(function (c) { call(c[0], c[1]); });
     return true;
   }
 

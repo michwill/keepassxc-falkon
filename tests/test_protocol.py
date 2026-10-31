@@ -60,6 +60,34 @@ def test_totp_is_flagged_and_fetched_fresh(client, fake):
     assert run(client, client.get_totp(alice.uuid)).result == "123456"
 
 
+def test_passkeys_carry_options_origin_and_keys(client, fake):
+    associate(client)
+    fake.passkey_response = {"id": "Y3JlZA", "type": "public-key", "response": {"clientDataJSON": "e30"}}
+    options = {"challenge": "Y2hhbGxlbmdlY2hhbGxlbmdl", "rpId": "example.com", "allowCredentials": []}
+    job = run(client, client.passkeys("get", options, "https://example.com"))
+    assert job.result["id"] == "Y3JlZA"
+    action, sent = fake.received[-1]
+    assert action == "passkeys-get"
+    assert sent["publicKey"] == options and sent["origin"] == "https://example.com"
+    assert sent["keys"] == [{"id": "falkon-test", "key": fake.keys["falkon-test"]}]
+
+    fake.passkey_response = {"errorCode": 22}
+    job = run(client, client.passkeys("create", {"challenge": "x"}, "https://example.com"))
+    assert job.result == {"errorCode": 22}
+    action, sent = fake.received[-1]
+    assert action == "passkeys-register" and sent["groupName"] == ""
+    assert not fake.unencrypted_nested
+
+
+def test_passkeys_on_a_locked_database_ask_to_unlock(client, fake):
+    associate(client)
+    fake.set_locked(True)
+    process_until(lambda: client.locked is True)
+    job = run(client, client.passkeys("get", {"challenge": "x"}, "https://example.com"))
+    assert job.error.code == protocol.DATABASE_NOT_OPENED
+    assert fake.unlock_requests == 1
+
+
 def test_no_logins_is_an_empty_result(client, fake):
     associate(client)
     job = run(client, client.get_logins("https://nothing.example/"))
@@ -145,6 +173,22 @@ def test_save_login_adds_updates_and_skips_duplicates(client, fake):
 
     job = run(client, client.save_login("https://example.com", "bob", "pw3"))
     assert job.result == "added" and len(fake.entries) == 2
+
+
+def test_writes_are_spaced_so_keepassxc_can_save(client, fake, monkeypatch):
+    monkeypatch.setattr(protocol, "WRITE_SPACING_S", 0.6)
+    associate(client)
+    first = client.save_login("https://example.com", "alice", "pw1")
+    second = client.passkeys("create", {"challenge": "x"}, "https://example.com")
+    lookup = client.get_logins("https://other.org/")
+    run(client, first)
+    process_until(lambda: lookup.done and second.done, timeout=5)
+    received = list(zip(fake.actions(), fake.received_at))
+    set_login_at = next(t for a, t in received if a == "set-login")
+    register_at = next(t for a, t in received if a == "passkeys-register")
+    assert register_at - set_login_at >= 0.5, received
+    # Reads aren't held back beyond the write ahead of them in the queue.
+    assert lookup.result == []
 
 
 def test_concurrent_lookups_share_and_serialize(client, fake):

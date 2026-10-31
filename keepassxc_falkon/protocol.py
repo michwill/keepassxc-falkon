@@ -55,6 +55,14 @@ INTERACTIVE_TIMEOUT_MS = 5 * 60 * 1000
 QUICK_TIMEOUT_MS = 15 * 1000
 CACHE_TTL_S = 30
 MAX_BUFFER = 8 * 1024 * 1024
+# KeePassXC saves 150 ms after a change, on a worker thread, while its main
+# thread keeps serving us from a nested event loop; when the save returns it
+# marks the database clean. A change we make *during* that save is therefore
+# kept in memory but never written, and lost at the next lock or quit
+# (KeePassXC 2.8: Database::saveAs → AsyncTask::runAndWaitForFuture →
+# markAsClean). So our writes keep this distance from each other; a save,
+# key derivation included, takes about a second with default settings.
+WRITE_SPACING_S = 3.0
 
 
 class KeePassXCError(Exception):
@@ -123,6 +131,13 @@ class _Raw:
         self.expected_nonce = None
 
 
+class _Sleep:
+    """Yielded by a job to pause without sending anything."""
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+
 class Job:
     """A running operation. ``result``/``error`` are set when ``done``."""
 
@@ -174,6 +189,7 @@ class KeePassXCClient(QObject):
         self._cache = {}          # url -> (monotonic time, [Login])
         self._pending = {}        # url -> Job (get-logins in progress)
         self._associate_after_unlock = False
+        self._last_write = None    # monotonic time our last change was answered
         # Session state, reset whenever the connection drops.
         self._box = None
         self._public_key = None
@@ -214,6 +230,13 @@ class KeePassXCClient(QObject):
     def get_totp(self, uuid, callback=None):
         """The entry's current TOTP code (empty if it has none)."""
         return self._submit(self._get_totp(uuid)).then(callback)
+
+    def passkeys(self, kind, public_key, origin, callback=None):
+        """Register (``kind == "create"``) or use (``"get"``) a passkey.
+        KeePassXC validates ``origin`` against the relying party, asks the
+        user, and answers with the credential, or with ``{"errorCode": n}``."""
+        action = "passkeys-register" if kind == "create" else "passkeys-get"
+        return self._submit(self._passkeys(action, public_key, origin)).then(callback)
 
     def associate(self, callback=None):
         """Connect to the open database (KeePassXC asks the user to name the
@@ -282,6 +305,7 @@ class KeePassXCClient(QObject):
                         return "unchanged"
                     uuid = entry.uuid
                     break
+        yield from self._space_writes()
         reply = yield _Raw("set-login", {
             "url": url,
             "submitUrl": url,
@@ -293,6 +317,7 @@ class KeePassXCClient(QObject):
             "uuid": uuid or "",
             "downloadFavicon": "false",
         }, timeout=INTERACTIVE_TIMEOUT_MS)
+        self._last_write = time.monotonic()
         self._cache = {}
         if reply.get("error") not in (None, "", "success"):
             return "declined"   # the user cancelled KeePassXC's update dialog
@@ -302,6 +327,21 @@ class KeePassXCClient(QObject):
         yield from self._session()
         reply = yield _Raw("get-totp", {"uuid": uuid})
         return str(reply.get("totp") or "")
+
+    def _passkeys(self, action, public_key, origin):
+        yield from self._session(trigger_unlock=True)
+        keys = [{"id": a["id"], "key": a["key"]} for a in self._store.associations().values()]
+        message = {"publicKey": public_key, "origin": origin, "keys": keys}
+        if action == "passkeys-register":
+            message["groupName"] = ""       # KeePassXC's default passkeys group
+            yield from self._space_writes()
+        reply = yield _Raw(action, message, timeout=INTERACTIVE_TIMEOUT_MS)
+        if action == "passkeys-register":
+            self._last_write = time.monotonic()
+        response = reply.get("response")
+        if not isinstance(response, dict):
+            raise KeePassXCError(PROTOCOL_ERROR, "KeePassXC sent no passkey response")
+        return response
 
     def _associate(self):
         self._associate_after_unlock = True
@@ -382,6 +422,14 @@ class KeePassXCClient(QObject):
         self._set_associated(db_hash, reply["id"])
         return db_hash
 
+    def _space_writes(self):
+        """Wait until KeePassXC has had time to save our previous change."""
+        if self._last_write is not None:
+            remaining = WRITE_SPACING_S - (time.monotonic() - self._last_write)
+            if remaining > 0:
+                log.debug("waiting %.1f s for KeePassXC to save the previous change", remaining)
+                yield _Sleep(remaining)
+
     def _keys(self):
         if self._box is not None:
             return
@@ -437,10 +485,17 @@ class KeePassXCClient(QObject):
             log.exception("KeePassXC request failed")
             self._finish(job, error=KeePassXCError(PROTOCOL_ERROR, str(e)))
         else:
+            if isinstance(raw, _Sleep):
+                QTimer.singleShot(int(raw.seconds * 1000), lambda: self._resume(job))
+                return
             try:
                 self._send(raw)
             except KeePassXCError as e:
                 self._step(None, e)
+
+    def _resume(self, job):
+        if self._current is job and not job.done:
+            self._step(None, None)
 
     def _finish(self, job, result=None, error=None):
         job.done, job.result, job.error = True, result, error
@@ -609,6 +664,7 @@ class KeePassXCClient(QObject):
             sock.deleteLater()
 
     def _on_database_locked(self):
+        log.debug("KeePassXC: database locked")
         self.locked, self.db_hash, self._session_hash = True, None, None
         self._cache = {}
         self.stateChanged.emit()
@@ -619,6 +675,7 @@ class KeePassXCClient(QObject):
     def _on_database_unlocked(self):
         # Possibly a different database (KeePassXC also says this when the
         # active database tab changes): re-learn its hash before trusting it.
+        log.debug("KeePassXC: database unlocked")
         self.locked, self.db_hash, self._session_hash = False, None, None
         self._cache = {}
         self.stateChanged.emit()

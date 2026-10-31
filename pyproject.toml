@@ -11,7 +11,7 @@ dependencies = []
 [dependency-groups]
 dev = ["pytest>=8"]
 # tests/e2e/run.py: build a throwaway KeePassXC database, drive Falkon over CDP
-e2e = ["pykeepass>=4", "websocket-client>=1.6"]
+e2e = ["pykeepass>=4", "websocket-client>=1.6", "cryptography>=42"]
 
 [tool.uv]
 package = false

@@ -24,7 +24,7 @@ def _icon(ok):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, client, store, parent=None):
+    def __init__(self, client, store, parent=None, on_passkeys_toggled=None):
         super().__init__(parent)
         self._client = client
         self._store = store
@@ -63,6 +63,15 @@ class SettingsDialog(QDialog):
         self._many_opt = QCheckBox("When several entries match, fill the best match without asking")
         self._many_opt.setChecked(store.option("fill_first_of_many"))
         self._many_opt.toggled.connect(lambda on: store.set_option("fill_first_of_many", on))
+        self._passkeys_opt = QCheckBox("Use KeePassXC for passkeys (applies to pages loaded afterwards)")
+        self._passkeys_opt.setChecked(store.option("passkeys"))
+
+        def toggle_passkeys(on):
+            store.set_option("passkeys", on)
+            if on_passkeys_toggled is not None:
+                on_passkeys_toggled()
+
+        self._passkeys_opt.toggled.connect(toggle_passkeys)
         clear_row = QHBoxLayout()
         clear_row.addWidget(QLabel("Clear copied passwords from the clipboard after"))
         clear = QSpinBox()
@@ -77,7 +86,7 @@ class SettingsDialog(QDialog):
                       "With several matches, pick an account from the KeePassXC toolbar button, "
                       "the key icon in the address bar, or the right-click menu of a login field.")
         note.setWordWrap(True)
-        for w in (self._unlock_opt, self._many_opt):
+        for w in (self._unlock_opt, self._many_opt, self._passkeys_opt):
             opt.addWidget(w)
         opt.addLayout(clear_row)
         opt.addWidget(note)

@@ -1,4 +1,4 @@
-"""The Falkon plugin object: wires the client, backend, filler and page script."""
+"""The Falkon plugin object: wires the client, backend, filler, passkeys and page scripts."""
 
 import logging
 import os
@@ -8,8 +8,10 @@ from PySide6 import QtCore
 from PySide6.QtWebEngineCore import QWebEngineScript
 
 from .backend import BACKEND_ID, KeePassXCBackend
+from .bridge import Bridge
 from .filler import SAFE_WORLD, Filler, frames_of, web_views
 from .menus import EntriesMenu, KeePassXCButton, app_icon
+from .passkeys import PasskeyBroker
 from .protocol import KeePassXCClient
 from .settings import SettingsDialog
 from .store import Store
@@ -18,7 +20,9 @@ from .urls import is_web
 log = logging.getLogger("keepassxc_falkon")
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
-_SCRIPT_NAME = "_keepassxc_falkon_fill"
+_FILL_SCRIPT = "_keepassxc_falkon_fill"
+_PASSKEYS_SCRIPT = "_keepassxc_falkon_passkeys"
+_PAGE_WORLD = QWebEngineScript.ScriptWorldId.MainWorld
 # Falkon's NavigationBar::loadSettings() defaults, for a never-customized bar.
 _DEFAULT_TOOLBAR = ["button-backforward", "button-reloadstop", "button-home", "locationbar",
                     "button-downloads", "adblock-icon", "button-tools"]
@@ -36,11 +40,13 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         self.store = Store(os.path.join(settingsPath, "keepassxc.json"))
         self.client = KeePassXCClient(self.store, parent=self)
         self.filler = Filler(self.client, self.store, parent=self)
-        Falkon.ExternalJsObject.registerExtraObject(_BRIDGE_ID, self.filler.bridge)
+        self.passkeys = PasskeyBroker(self.client, parent=self)
+        self.bridge = Bridge(self.filler, self.passkeys, parent=self)
+        Falkon.ExternalJsObject.registerExtraObject(_BRIDGE_ID, self.bridge)
 
-        with open(os.path.join(_DIR, "fill.js"), encoding="utf-8") as f:
-            self._fill_js = f.read()
-        self._install_script(app)
+        self._fill_js = self._read("fill.js")
+        self._passkeys_js = self._read("passkeys.js")
+        self.install_scripts()
         if state == Falkon.PluginInterface.LateInitState:
             self._inject_into_open_pages()
 
@@ -69,16 +75,14 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         for window in list(self._buttons):
             self._remove_button(window)
         app.autoFill().passwordManager().unregisterBackend(self.backend)
-        Falkon.ExternalJsObject.unregisterExtraObject(self.filler.bridge)
-        scripts = app.webProfile().scripts()
-        for script in scripts.find(_SCRIPT_NAME):
-            scripts.remove(script)
+        Falkon.ExternalJsObject.unregisterExtraObject(self.bridge)
+        self._remove_scripts()
 
     def testPlugin(self):
         return True
 
     def showSettings(self, parent=None):
-        SettingsDialog(self.client, self.store, parent).exec()
+        SettingsDialog(self.client, self.store, parent, on_passkeys_toggled=self.install_scripts).exec()
 
     # --- right-click menu on form fields --------------------------------
 
@@ -120,21 +124,39 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
 
     # --- scripts --------------------------------------------------------
 
-    def _install_script(self, app):
-        scripts = app.webProfile().scripts()
-        for script in scripts.find(_SCRIPT_NAME):
-            scripts.remove(script)
-        script = QWebEngineScript()
-        script.setName(_SCRIPT_NAME)
-        script.setSourceCode(self._fill_js)
-        script.setWorldId(SAFE_WORLD)
-        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
-        script.setRunsOnSubFrames(True)
-        scripts.insert(script)
+    @staticmethod
+    def _read(name):
+        with open(os.path.join(_DIR, name), encoding="utf-8") as f:
+            return f.read()
+
+    def _remove_scripts(self):
+        scripts = Falkon.MainApplication.instance().webProfile().scripts()
+        for name in (_FILL_SCRIPT, _PASSKEYS_SCRIPT):
+            for script in scripts.find(name):
+                scripts.remove(script)
+
+    def install_scripts(self):
+        """fill.js in Falkon's isolated world; passkeys.js, if enabled, in the
+        page's own world. Both at document creation, before site scripts
+        run, in every frame. Applies to pages loaded from now on."""
+        self._remove_scripts()
+        scripts = Falkon.MainApplication.instance().webProfile().scripts()
+        wanted = [(_FILL_SCRIPT, self._fill_js, SAFE_WORLD)]
+        if self.store.option("passkeys"):
+            wanted.append((_PASSKEYS_SCRIPT, self._passkeys_js, _PAGE_WORLD))
+        for name, source, world in wanted:
+            script = QWebEngineScript()
+            script.setName(name)
+            script.setSourceCode(source)
+            script.setWorldId(world)
+            script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+            script.setRunsOnSubFrames(True)
+            scripts.insert(script)
 
     def _inject_into_open_pages(self):
-        # Enabled at runtime: pages already open won't run the profile script
-        # until they navigate. fill.js is idempotent, so just run it there.
+        # Enabled at runtime: pages already open won't run the profile scripts
+        # until they navigate. fill.js is idempotent, so just run it there
+        # (passkeys need the page reloaded: they must precede site scripts).
         views = web_views()
         for view in views:
             try:

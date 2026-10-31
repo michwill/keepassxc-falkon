@@ -36,6 +36,13 @@ browser extension, no extra Python packages.
   show its unlock dialog (throttled; can be turned off). Once you unlock, the
   open pages are filled. A save made while locked is kept and written after
   you unlock.
+- **Passkeys:** sites' passkey (WebAuthn) requests are answered by KeePassXC
+  (2.7.7+). Creating a passkey stores it in KeePassXC's "KeePassXC-Browser
+  Passkeys" group; signing in shows KeePassXC's confirmation dialog. Falkon
+  itself has no passkey support: without this, passkey sign-in just hangs.
+  Works on `https://` sites in the page itself and same-site frames. If the
+  database is locked, KeePassXC asks you to unlock it and the sign-in carries
+  on. Can be turned off in the plugin settings.
 - **Asks KeePassXC only on pages with login fields**, like keepassxc-browser,
   so browsing a site doesn't keep raising KeePassXC's access dialog or hand it
   your history.
@@ -104,6 +111,15 @@ in KeePassXC's browser-integration settings.
   re-enters Falkon while it waits.
 - `backend.py` — the Falkon `PasswordBackend`.
 - `menus.py` — the toolbar button and the field context menu.
+- `passkeys.js` + `passkeys.py` — passkeys. `passkeys.js` runs in the page's
+  own JavaScript world, before the site's scripts. It stands in for
+  `navigator.credentials.create/get` (passkey requests only), serializes them,
+  and turns KeePassXC's answer back into `PublicKeyCredential` objects. It
+  holds no secrets. Requests reach Python through `fill.js`. Python probes for
+  the frame that really has that request pending, takes the origin from
+  Chromium, and refuses frames from another site (KeePassXC signs with
+  `"crossOrigin": false`). KeePassXC then checks the relying-party ID against
+  that origin and asks you.
 - `filler.py` + `fill.js` — filling. Falkon's own autofill replays a stored
   form submission by input `name`, which KeePassXC entries don't have, so the
   plugin fills by itself. `fill.js` runs in Falkon's isolated JavaScript world
@@ -123,25 +139,49 @@ in KeePassXC's browser-integration settings.
 - Falkon offers to save only logins submitted through a `<form>` in the top
   frame (that's Falkon's own form watcher). Form-less logins and logins inside
   iframes are filled, but you have to add them to KeePassXC yourself.
-- No HTTP basic-auth prefill, passkeys, TOTP autofill or password generator yet
-  (TOTP codes can be copied from the toolbar menu).
+- No HTTP basic-auth prefill, TOTP autofill or password generator yet (TOTP
+  codes can be copied from the toolbar menu).
+- Passkeys: no "conditional" sign-in (passkeys offered in a login field's
+  autofill dropdown). The plugin reports it unavailable, so sites show their
+  regular "Sign in with a passkey" button. Not available in frames embedded
+  from another site. Turning passkeys on or off applies to pages loaded
+  afterwards. Hardware security keys don't work in Falkon either way (it has
+  no WebAuthn dialogs).
 - After updating the plugin, restart Falkon (modules are cached).
+- **A KeePassXC bug to know about (2.8):** a change that arrives over browser
+  integration *while KeePassXC is saving* stays in memory but is never
+  written. KeePassXC marks the database clean when the save returns, so the
+  change is lost at the next lock or quit, without a "save changes?" prompt.
+  The plugin spaces its own changes 3 seconds apart, so a passkey registered
+  right after a saved password can't hit this. Changes made at the same moment
+  in KeePassXC itself, or by another client, still can.
 
 ## Development
 
 ```bash
 uv venv --system-site-packages     # PySide6 comes from the system, as in Falkon
-uv pip install pytest pykeepass websocket-client
+uv pip install pytest pykeepass websocket-client cryptography
 .venv/bin/python -m pytest         # unit tests against a fake KeePassXC
 .venv/bin/python tests/e2e/run.py  # real Falkon + real KeePassXC, isolated
 ```
 
 The end-to-end run builds a throwaway KeePassXC database and Falkon profile
-and starts both apps headless (offscreen Qt, private `HOME`/`XDG_*`/`TMPDIR`,
-a private runtime dir for KeePassXC's socket, a private D-Bus session). It
-never touches your own KeePassXC, Falkon profile or desktop. It drives Falkon
-over the DevTools protocol, with a small test-only plugin
-(`tests/e2e/kpxc_e2e_probe`) exposing Falkon's password manager.
+and runs both apps inside a bubblewrap sandbox, sealed off from your desktop
+session:
+
+- its own network namespace, so no abstract sockets, including your X
+  server's;
+- a private `/tmp` and `/run`: no access to your X server, session or system
+  D-Bus (so no Polkit prompts) or KeePassXC socket;
+- your filesystem read-only, a cleared environment and a fake `HOME`.
+
+Inside, KeePassXC runs on a private Xvfb display (the test presses keys in
+its dialogs) with Quick Unlock off, and Falkon runs offscreen. Falkon is
+driven over the DevTools protocol, with a small test-only plugin
+(`tests/e2e/kpxc_e2e_probe`) exposing Falkon's password manager. Passkeys are
+verified the way a website's server would: client data, authenticator data
+and the signature. It needs `bwrap`, `Xvfb`, `dbus-run-session` and
+`libXtst`.
 
 Set `KEEPASSXC_FALKON_DEBUG=1` before starting Falkon to log the plugin's
 activity to stderr.

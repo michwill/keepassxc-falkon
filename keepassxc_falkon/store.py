@@ -22,6 +22,8 @@ DEFAULT_OPTIONS = {
     # With several matching entries, fill the best match on page load
     # (Falkon's own behaviour) instead of waiting for the user to pick.
     "fill_first_of_many": False,
+    # Answer websites' passkey (WebAuthn) requests with KeePassXC.
+    "passkeys": True,
     # Copied passwords / TOTP codes are wiped from the clipboard after this
     # many seconds (0: never), if nothing else was copied meanwhile.
     "clipboard_clear_seconds": 10,

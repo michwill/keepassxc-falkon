@@ -18,7 +18,7 @@ import time
 from collections import OrderedDict
 
 import Falkon
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication
@@ -50,26 +50,22 @@ def frames_of(page):
     return out
 
 
+def frames_at(views, key):
+    """``(frame, view)`` for every frame showing ``key``. Keep ``views``
+    referenced while using the frames."""
+    found = []
+    for view in views:
+        try:
+            found += [(f, view) for f in frames_of(view.page()) if page_key(f.url()) == key]
+        except RuntimeError:
+            continue    # a view Qt already deleted
+    return found
+
+
 def fill_script(creds, token=None):
     call = "k.fill(" + json.dumps(creds) + ")"
     guard = "k && k.token === " + json.dumps(token) if token else "k"
     return "(function(){var k=window.__kpxcFalkon;return !!(" + guard + ") && " + call + ";})()"
-
-
-class Bridge(QObject):
-    """Exposed to fill.js as ``window.external.extra.keepassxc``."""
-
-    def __init__(self, filler, parent=None):
-        super().__init__(parent)
-        self._filler = filler
-
-    @Slot(str, str, str)
-    def loginFormFound(self, token, href, info):
-        # Exceptions in web-channel slots vanish silently; log them.
-        try:
-            self._filler.login_form_found(token, href, info)
-        except Exception:
-            log.exception("handling a login form failed")
 
 
 class Filler(QObject):
@@ -82,7 +78,6 @@ class Filler(QObject):
         self._views = views
         self._last_unlock_request = 0.0
         self._form_pages = OrderedDict()    # lookup URLs that showed login fields
-        self.bridge = Bridge(self, self)
         client.databaseUnlocked.connect(self.rescan_all)
 
     # --- reports from pages -------------------------------------------
@@ -96,8 +91,8 @@ class Filler(QObject):
         if not is_web(url) or not token:
             return
         key = page_key(url)
-        _views, frames = self._frames_at(key)
-        if not frames:
+        _views = self._views()
+        if not frames_at(_views, key):
             return      # not a frame we can see (navigated away already?)
         lookup = lookup_url(url)
         self._form_pages[lookup] = True
@@ -123,8 +118,8 @@ class Filler(QObject):
             return      # several accounts: the user picks (key icon / context menu)
         best = logins[0]
         creds = {"username": best.login, "password": best.password, "overwrite": False}
-        _views, frames = self._frames_at(key)
-        for frame in frames:
+        views = self._views()
+        for frame, _view in frames_at(views, key):
             frame.runJavaScript(fill_script(creds, token), SAFE_WORLD)
 
     def _maybe_request_unlock(self):
@@ -157,19 +152,6 @@ class Filler(QObject):
                         frame.runJavaScript("window.__kpxcFalkon && window.__kpxcFalkon.rescan()", SAFE_WORLD)
             except RuntimeError:
                 continue    # a view Qt already deleted
-
-    # --- helpers ------------------------------------------------------
-
-    def _frames_at(self, key):
-        """Frames showing ``key``, plus the views to keep alive meanwhile."""
-        views = self._views()
-        frames = []
-        for view in views:
-            try:
-                frames += [f for f in frames_of(view.page()) if page_key(f.url()) == key]
-            except RuntimeError:
-                continue
-        return views, frames
 
 
 def autocomplete_enabled():
