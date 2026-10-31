@@ -6,7 +6,7 @@
 #   settings.py  status / connection / options dialog
 #   plugin.py    the plugin object Falkon loads
 #
-# Licensed GPL-3.0-or-later.
+# Licensed MIT (see LICENSE).
 
 # Falkon imports this package to load the plugin, with its embedded "Falkon"
 # module available. Imported anywhere else (the tests), only the Qt-only

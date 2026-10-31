@@ -201,4 +201,4 @@ activity to stderr.
 
 ## License
 
-GPL-3.0-or-later.
+MIT. See [LICENSE](LICENSE).
