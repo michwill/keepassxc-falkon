@@ -158,7 +158,7 @@ def test_unlock_broadcast_invalidates_cache(client, fake):
     associate(client)
     run(client, client.get_logins(URL))
     fake.set_entry_password(0, "new")
-    fake.set_locked(False)   # e.g. the user switched database tabs
+    fake.set_locked(False)  # e.g. the user switched database tabs
     process_until(lambda: client.cached_logins(URL) is None)
     job = run(client, client.get_logins(URL))
     assert job.result[0].password == "new"
@@ -202,18 +202,19 @@ def test_writes_are_spaced_so_keepassxc_can_save(client, fake, monkeypatch):
 
 def test_disconnect_during_write_spacing_fails_cleanly(qapp, sock_path, store, monkeypatch):
     from tests.fake_keepassxc import FakeProcess
+
     monkeypatch.setattr(protocol, "WRITE_SPACING_S", 0.8)
     fake = FakeProcess(sock_path)
     c = KeePassXCClient(store, paths=lambda: [sock_path])
     associate(c)
     run(c, c.save_login("https://example.com", "alice", "pw1"))
-    second = c.save_login("https://example.com", "bob", "pw2")    # waits for the spacing
+    second = c.save_login("https://example.com", "bob", "pw2")  # waits for the spacing
     process_until(lambda: c._current is second, timeout=2)
-    fake.close()                                                  # KeePassXC quits meanwhile
+    fake.close()  # KeePassXC quits meanwhile
     process_until(lambda: second.done, timeout=5)
     assert second.error is not None
     assert second.error.code in (protocol.DISCONNECTED, protocol.NOT_RUNNING)
-    later = c.get_logins("https://example.com/")                   # the queue isn't stuck
+    later = c.get_logins("https://example.com/")  # the queue isn't stuck
     process_until(lambda: later.done, timeout=5)
     assert later.error is not None
     assert later.error.code == protocol.NOT_RUNNING
@@ -239,7 +240,7 @@ def test_concurrent_lookups_share_and_serialize(client, fake):
 def test_sync_wait_times_out_then_completes_async(client, fake):
     fake.add_entry("https://example.com", "alice", "s3cret")
     associate(client)
-    fake.logins_delay = 0.5      # KeePassXC showing its access dialog
+    fake.logins_delay = 0.5  # KeePassXC showing its access dialog
     got = []
     job = client.get_logins(URL, callback=lambda j: got.append(j.result))
     assert client.wait(job, 50) is False
@@ -268,6 +269,7 @@ def test_not_running(qapp, store, tmp_path):
 
 def test_server_restart_reconnects(qapp, sock_path, store):
     from tests.fake_keepassxc import FakeProcess
+
     fake = FakeProcess(sock_path)
     c = KeePassXCClient(store, paths=lambda: [sock_path])
     fake.add_entry("https://example.com", "alice", "s3cret")

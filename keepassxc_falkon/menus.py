@@ -41,8 +41,9 @@ def copy_text(text: str, secret: bool = False, clear_after_s: int = 0) -> None:
         mime.setData(SECRET_HINT, b"secret")
     clipboard.setMimeData(mime)
     if secret and clear_after_s > 0:
+
         def wipe() -> None:
-            if clipboard.text() == text:    # unless something else was copied since
+            if clipboard.text() == text:  # unless something else was copied since
                 clipboard.clear()
 
         QTimer.singleShot(clear_after_s * 1000, wipe)
@@ -53,8 +54,9 @@ def _info(menu: QMenu, text: str) -> None:
 
 
 class EntriesMenu:
-    def __init__(self, client: KeePassXCClient, filler: Filler, store: Store,
-                 open_settings: Callable[[QWidget | None], None]) -> None:
+    def __init__(
+        self, client: KeePassXCClient, filler: Filler, store: Store, open_settings: Callable[[QWidget | None], None]
+    ) -> None:
         self._client = client
         self._filler = filler
         self._store = store
@@ -82,13 +84,20 @@ class EntriesMenu:
     def populate(self, menu: QMenu, view: QWebEngineView, direct_fill: bool) -> None:
         sites = self.sites(view)
         jobs = [(url, self._client.get_logins(lookup_url(url))) for url in sites]
-        for _url, job in jobs:          # one shared budget: requests are serialized
+        for _url, job in jobs:  # one shared budget: requests are serialized
             if not job.done:
                 self._client.wait(job, WAIT_MS)
 
-        problem = next((job.error for _url, job in jobs if job.done and job.error is not None
-                        and job.error.code in (protocol.NOT_RUNNING, protocol.DATABASE_NOT_OPENED,
-                                               protocol.NOT_ASSOCIATED)), None)
+        problem = next(
+            (
+                job.error
+                for _url, job in jobs
+                if job.done
+                and job.error is not None
+                and job.error.code in (protocol.NOT_RUNNING, protocol.DATABASE_NOT_OPENED, protocol.NOT_ASSOCIATED)
+            ),
+            None,
+        )
         if not sites:
             _info(menu, "No website in this tab")
         elif problem is not None:
@@ -148,7 +157,8 @@ class EntriesMenu:
             sub.addAction("Fill").triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
             sub.addAction("Copy username").triggered.connect(lambda _c=False, e=login: copy_text(e.login))
             sub.addAction("Copy password").triggered.connect(
-                lambda _c=False, e=login: copy_text(e.password, secret=True, clear_after_s=self._clear_after()))
+                lambda _c=False, e=login: copy_text(e.password, secret=True, clear_after_s=self._clear_after())
+            )
             if login.has_totp:
                 sub.addAction("Copy TOTP").triggered.connect(lambda _c=False, e=login: self._copy_totp(e))
 
@@ -223,4 +233,4 @@ class KeePassXCButton(Falkon.AbstractButtonInterface):
             self._menus.populate(menu, view, direct_fill=False)
         menu.aboutToHide.connect(controller.callPopupClosed)
         menu.popup(controller.callPopupPosition(menu.sizeHint()))
-        self._menu = menu       # keep it alive while shown
+        self._menu = menu  # keep it alive while shown

@@ -110,7 +110,8 @@ class Login:
 def socket_paths() -> list[str]:
     """Where KeePassXC may be listening (src/browser/BrowserShared.cpp)."""
     runtime = os.environ.get("XDG_RUNTIME_DIR") or QStandardPaths.writableLocation(
-        QStandardPaths.StandardLocation.RuntimeLocation)
+        QStandardPaths.StandardLocation.RuntimeLocation
+    )
     paths = [
         os.path.join(runtime, "app", "org.keepassxc.KeePassXC", SERVER_NAME),
         os.path.join(runtime, SERVER_NAME),  # legacy symlink (non-Flatpak)
@@ -131,9 +132,15 @@ def _unb64(text: str) -> bytes:
 class _Raw:
     """One request on the wire. ``plain`` marks the unencrypted key exchange."""
 
-    def __init__(self, action: str, message: dict[str, Any] | None = None, *,
-                 plain: dict[str, str] | None = None,
-                 trigger_unlock: bool = False, timeout: int = QUICK_TIMEOUT_MS) -> None:
+    def __init__(
+        self,
+        action: str,
+        message: dict[str, Any] | None = None,
+        *,
+        plain: dict[str, str] | None = None,
+        trigger_unlock: bool = False,
+        timeout: int = QUICK_TIMEOUT_MS,
+    ) -> None:
         self.action = action
         self.message = message or {}
         self.plain = plain
@@ -185,8 +192,9 @@ class KeePassXCClient(QObject):
     databaseUnlocked = Signal()
     databaseLocked = Signal()
 
-    def __init__(self, store: "Store", parent: QObject | None = None,
-                 paths: Callable[[], list[str]] = socket_paths) -> None:
+    def __init__(
+        self, store: "Store", parent: QObject | None = None, paths: Callable[[], list[str]] = socket_paths
+    ) -> None:
         super().__init__(parent)
         self._store = store
         self._paths = paths
@@ -201,11 +209,11 @@ class KeePassXCClient(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
         self._cache: dict[str, tuple[float, list[Login]]] = {}
-        self._pending: dict[str, Job] = {}     # get-logins in progress, by url
+        self._pending: dict[str, Job] = {}  # get-logins in progress, by url
         self._associate_after_unlock = False
-        self._last_write: float | None = None   # when our last change was answered
+        self._last_write: float | None = None  # when our last change was answered
         # Session state, reset whenever the connection drops.
-        self._crypto: tuple[sodium.Box, bytes] | None = None   # (box, our public key)
+        self._crypto: tuple[sodium.Box, bytes] | None = None  # (box, our public key)
         self._session_hash: str | None = None  # database test-associated this session
         # What we last learned, for status displays.
         self.running: bool | None = None
@@ -234,8 +242,16 @@ class KeePassXCClient(QObject):
         hit = self._cache.get(url)
         return hit[1] if hit is not None else None
 
-    def save_login(self, url: str, login: str, password: str, uuid: str | None = None, *,
-                   trigger_unlock: bool = False, callback: Callback | None = None) -> Job:
+    def save_login(
+        self,
+        url: str,
+        login: str,
+        password: str,
+        uuid: str | None = None,
+        *,
+        trigger_unlock: bool = False,
+        callback: Callback | None = None,
+    ) -> Job:
         """Create or update an entry. Without ``uuid``, an existing entry
         with the same username is updated rather than duplicated. Result:
         ``"added"``, ``"updated"``, ``"unchanged"`` or ``"declined"``."""
@@ -245,8 +261,7 @@ class KeePassXCClient(QObject):
         """The entry's current TOTP code (empty if it has none)."""
         return self._submit(self._get_totp(uuid)).then(callback)
 
-    def passkeys(self, kind: str, public_key: dict[str, Any], origin: str,
-                 callback: Callback | None = None) -> Job:
+    def passkeys(self, kind: str, public_key: dict[str, Any], origin: str, callback: Callback | None = None) -> Job:
         """Register (``kind == "create"``) or use (``"get"``) a passkey.
         KeePassXC validates ``origin`` against the relying party, asks the
         user, and answers with the credential, or with ``{"errorCode": n}``."""
@@ -299,8 +314,9 @@ class KeePassXCClient(QObject):
         yield from self._session()
         keys = [{"id": a["id"], "key": a["key"]} for a in self._store.associations().values()]
         try:
-            reply = yield _Raw("get-logins", {"url": url, "id": self.associated_id or "", "keys": keys},
-                               timeout=INTERACTIVE_TIMEOUT_MS)
+            reply = yield _Raw(
+                "get-logins", {"url": url, "id": self.associated_id or "", "keys": keys}, timeout=INTERACTIVE_TIMEOUT_MS
+            )
         except KeePassXCError as e:
             if e.code != NO_LOGINS_FOUND:
                 raise
@@ -310,8 +326,7 @@ class KeePassXCClient(QObject):
         self._cache[url] = (time.monotonic(), logins)
         return logins
 
-    def _save_login(self, url: str, login: str, password: str, uuid: str | None,
-                    trigger_unlock: bool) -> Steps[str]:
+    def _save_login(self, url: str, login: str, password: str, uuid: str | None, trigger_unlock: bool) -> Steps[str]:
         yield from self._session(trigger_unlock=trigger_unlock)
         if not uuid:
             self._cache.pop(url, None)
@@ -322,21 +337,25 @@ class KeePassXCClient(QObject):
                     uuid = entry.uuid
                     break
         yield from self._space_writes()
-        reply = yield _Raw("set-login", {
-            "url": url,
-            "submitUrl": url,
-            "id": self.associated_id or "",
-            "login": login,
-            "password": password,
-            "group": "",
-            "groupUuid": "",
-            "uuid": uuid or "",
-            "downloadFavicon": "false",
-        }, timeout=INTERACTIVE_TIMEOUT_MS)
+        reply = yield _Raw(
+            "set-login",
+            {
+                "url": url,
+                "submitUrl": url,
+                "id": self.associated_id or "",
+                "login": login,
+                "password": password,
+                "group": "",
+                "groupUuid": "",
+                "uuid": uuid or "",
+                "downloadFavicon": "false",
+            },
+            timeout=INTERACTIVE_TIMEOUT_MS,
+        )
         self._last_write = time.monotonic()
         self._cache = {}
         if reply.get("error") not in (None, "", "success"):
-            return "declined"   # the user cancelled KeePassXC's update dialog
+            return "declined"  # the user cancelled KeePassXC's update dialog
         return "updated" if uuid else "added"
 
     def _get_totp(self, uuid: str) -> Steps[str]:
@@ -349,7 +368,7 @@ class KeePassXCClient(QObject):
         keys = [{"id": a["id"], "key": a["key"]} for a in self._store.associations().values()]
         message = {"publicKey": public_key, "origin": origin, "keys": keys}
         if action == "passkeys-register":
-            message["groupName"] = ""       # KeePassXC's default passkeys group
+            message["groupName"] = ""  # KeePassXC's default passkeys group
             yield from self._space_writes()
         reply = yield _Raw(action, message, timeout=INTERACTIVE_TIMEOUT_MS)
         if action == "passkeys-register":
@@ -380,7 +399,7 @@ class KeePassXCClient(QObject):
                 if e.code != DATABASE_NOT_OPENED:
                     raise
                 self._note_error(e)
-                return False      # KeePassXC is showing its unlock dialog
+                return False  # KeePassXC is showing its unlock dialog
             self._set_hash(reply.get("hash"))
         return True
 
@@ -430,8 +449,9 @@ class KeePassXCClient(QObject):
             self.associated_id = None
             raise KeePassXCError(NOT_ASSOCIATED, "The open KeePassXC database isn't connected to Falkon")
         id_public, _ = sodium.keypair()
-        reply = yield _Raw("associate", {"key": _b64(public_key), "idKey": _b64(id_public)},
-                           timeout=INTERACTIVE_TIMEOUT_MS)
+        reply = yield _Raw(
+            "associate", {"key": _b64(public_key), "idKey": _b64(id_public)}, timeout=INTERACTIVE_TIMEOUT_MS
+        )
         db_hash = self._set_hash(reply.get("hash") or db_hash)
         assoc_id = str(reply["id"])
         self._store.set_association(db_hash, assoc_id, _b64(id_public))
@@ -570,8 +590,11 @@ class KeePassXCClient(QObject):
             if self._crypto is None:
                 raise KeePassXCError(DISCONNECTED, "Lost the connection to KeePassXC")
             inner = json.dumps({"action": raw.action, **raw.message}).encode("utf-8")
-            envelope = {"action": raw.action, "message": _b64(self._crypto[0].encrypt(inner, nonce)),
-                        "nonce": _b64(nonce)}
+            envelope = {
+                "action": raw.action,
+                "message": _b64(self._crypto[0].encrypt(inner, nonce)),
+                "nonce": _b64(nonce),
+            }
             if raw.trigger_unlock:
                 envelope["triggerUnlock"] = "true"
         envelope["clientID"] = self._client_id
@@ -597,7 +620,7 @@ class KeePassXCClient(QObject):
                 start = len(text) - len(text.lstrip())
                 message, end = decoder.raw_decode(text, start)
             except ValueError:
-                break       # partial message: wait for the rest
+                break  # partial message: wait for the rest
             self._buffer = text[end:].encode("utf-8")
             if isinstance(message, dict):
                 self._handle(message)
@@ -652,8 +675,9 @@ class KeePassXCClient(QObject):
         return reply
 
     def _on_timeout(self) -> None:
-        log.warning("KeePassXC didn't answer %r in time; reconnecting",
-                    self._inflight.action if self._inflight else None)
+        log.warning(
+            "KeePassXC didn't answer %r in time; reconnecting", self._inflight.action if self._inflight else None
+        )
         self._fail_connection(KeePassXCError(TIMEOUT, "KeePassXC didn't answer"))
 
     def _on_disconnected(self) -> None:

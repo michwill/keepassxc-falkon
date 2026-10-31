@@ -14,8 +14,14 @@ _x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
 _x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
 _x11.XDefaultRootWindow.restype = Window
 _x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-_x11.XQueryTree.argtypes = [ctypes.c_void_p, Window, ctypes.POINTER(Window), ctypes.POINTER(Window),
-                            ctypes.POINTER(ctypes.POINTER(Window)), ctypes.POINTER(ctypes.c_uint)]
+_x11.XQueryTree.argtypes = [
+    ctypes.c_void_p,
+    Window,
+    ctypes.POINTER(Window),
+    ctypes.POINTER(Window),
+    ctypes.POINTER(ctypes.POINTER(Window)),
+    ctypes.POINTER(ctypes.c_uint),
+]
 _x11.XFetchName.argtypes = [ctypes.c_void_p, Window, ctypes.POINTER(ctypes.c_char_p)]
 _x11.XFree.argtypes = [ctypes.c_void_p]
 _x11.XSetInputFocus.argtypes = [ctypes.c_void_p, Window, ctypes.c_int, ctypes.c_ulong]
@@ -33,15 +39,31 @@ _IS_VIEWABLE = 2
 
 
 class _WindowAttributes(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int),
-                ("border_width", ctypes.c_int), ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
-                ("root", Window), ("class_", ctypes.c_int), ("bit_gravity", ctypes.c_int),
-                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
-                ("backing_planes", ctypes.c_ulong), ("backing_pixel", ctypes.c_ulong),
-                ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong), ("map_installed", ctypes.c_int),
-                ("map_state", ctypes.c_int), ("all_event_masks", ctypes.c_long),
-                ("your_event_mask", ctypes.c_long), ("do_not_propagate_mask", ctypes.c_long),
-                ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
+    _fields_ = [
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int),
+        ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p),
+        ("root", Window),
+        ("class_", ctypes.c_int),
+        ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int),
+        ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong),
+        ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int),
+        ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int),
+        ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long),
+        ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
 
 
 _x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, Window, ctypes.POINTER(_WindowAttributes)]
@@ -65,14 +87,22 @@ class XDisplay:
         root_ret, parent_ret = Window(), Window()
         children = ctypes.POINTER(Window)()
         count = ctypes.c_uint()
-        if not _x11.XQueryTree(self._dpy, root, ctypes.byref(root_ret), ctypes.byref(parent_ret),
-                               ctypes.byref(children), ctypes.byref(count)):
+        if not _x11.XQueryTree(
+            self._dpy,
+            root,
+            ctypes.byref(root_ret),
+            ctypes.byref(parent_ret),
+            ctypes.byref(children),
+            ctypes.byref(count),
+        ):
             return []
         found = []
         attrs = _WindowAttributes()
         for i in range(count.value):
-            if not _x11.XGetWindowAttributes(self._dpy, children[i], ctypes.byref(attrs)) \
-                    or attrs.map_state != _IS_VIEWABLE:
+            if (
+                not _x11.XGetWindowAttributes(self._dpy, children[i], ctypes.byref(attrs))
+                or attrs.map_state != _IS_VIEWABLE
+            ):
                 continue
             name = ctypes.c_char_p()
             if _x11.XFetchName(self._dpy, children[i], ctypes.byref(name)) and name.value:
@@ -90,7 +120,7 @@ class XDisplay:
             matches = [w for w, t in self._top_levels() if t == title]
             if matches:
                 window = matches[-1]
-                time.sleep(0.5)            # let Qt finish mapping and laying out
+                time.sleep(0.5)  # let Qt finish mapping and laying out
                 _x11.XRaiseWindow(self._dpy, window)
                 _x11.XSetInputFocus(self._dpy, window, _REVERT_TO_PARENT, 0)
                 _x11.XSync(self._dpy, 0)
@@ -103,9 +133,15 @@ class XDisplay:
         raise AssertionError(f"no window titled {title!r} (have: {self.titles()})")
 
     def _type(self, combo):
-        codes = [_x11.XKeysymToKeycode(self._dpy, _x11.XStringToKeysym(
-            {"shift": "Shift_L", "ctrl": "Control_L", "alt": "Alt_L"}.get(part, part).encode()))
-            for part in combo.split("+")]
+        codes = [
+            _x11.XKeysymToKeycode(
+                self._dpy,
+                _x11.XStringToKeysym(
+                    {"shift": "Shift_L", "ctrl": "Control_L", "alt": "Alt_L"}.get(part, part).encode()
+                ),
+            )
+            for part in combo.split("+")
+        ]
         for code in codes:
             _xtst.XTestFakeKeyEvent(self._dpy, code, 1, 0)
         for code in reversed(codes):

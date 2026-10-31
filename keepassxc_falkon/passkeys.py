@@ -53,7 +53,7 @@ _ERRORS = {
 _NOT_ALLOWED = ("NotAllowedError", "The operation either timed out or was not allowed.")
 
 
-Answer = dict[str, Any]       # {"credential": {...}} or {"error": {"name", "message"}}
+Answer = dict[str, Any]  # {"credential": {...}} or {"error": {"name", "message"}}
 Deliver = Callable[[Answer], None]
 
 
@@ -82,8 +82,12 @@ def with_attested_auth_data(credential: dict[str, Any]) -> dict[str, Any]:
 
 
 class PasskeyBroker(QObject):
-    def __init__(self, client: KeePassXCClient, parent: QObject | None = None,
-                 views: Callable[[], list[QWebEngineView]] = web_views) -> None:
+    def __init__(
+        self,
+        client: KeePassXCClient,
+        parent: QObject | None = None,
+        views: Callable[[], list[QWebEngineView]] = web_views,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._views = views
@@ -100,8 +104,10 @@ class PasskeyBroker(QObject):
         # pages' Python wrappers) alive until the frames answer.
         views = self._views()
         candidates = frames_at(views, page_key(url))
-        probe = (f"(function(){{var k=window.__kpxcFalkon;return !!(k&&k.token==={json.dumps(token)}"
-                 f"&&k.hasPasskeyRequest({json.dumps(request_id)}));}})()")
+        probe = (
+            f"(function(){{var k=window.__kpxcFalkon;return !!(k&&k.token==={json.dumps(token)}"
+            f"&&k.hasPasskeyRequest({json.dumps(request_id)}));}})()"
+        )
         verified = False
 
         def answered(frame: QWebEngineFrame, view: QWebEngineView, result: object) -> None:
@@ -116,13 +122,26 @@ class PasskeyBroker(QObject):
         for frame, view in candidates:
             frame.runJavaScript(probe, SAFE_WORLD, lambda r, f=frame, v=view: answered(f, v, r))
 
-    def _verified(self, frame: QWebEngineFrame, view: QWebEngineView, token: str, request_id: str, kind: str,
-                  public_key: object, views: list[QWebEngineView]) -> None:
+    def _verified(
+        self,
+        frame: QWebEngineFrame,
+        view: QWebEngineView,
+        token: str,
+        request_id: str,
+        kind: str,
+        public_key: object,
+        views: list[QWebEngineView],
+    ) -> None:
         def deliver(answer: Answer) -> None:
-            log.debug("passkey request %s answered: %s", request_id,
-                      answer["error"]["name"] if "error" in answer else "credential")
-            script = (f"(function(){{var k=window.__kpxcFalkon;return !!(k&&k.token==={json.dumps(token)})"
-                      f"&&k.passkeyResult({json.dumps(request_id)},{json.dumps(json.dumps(answer))});}})()")
+            log.debug(
+                "passkey request %s answered: %s",
+                request_id,
+                answer["error"]["name"] if "error" in answer else "credential",
+            )
+            script = (
+                f"(function(){{var k=window.__kpxcFalkon;return !!(k&&k.token==={json.dumps(token)})"
+                f"&&k.passkeyResult({json.dumps(request_id)},{json.dumps(json.dumps(answer))});}})()"
+            )
             if frame.isValid():
                 frame.runJavaScript(script, SAFE_WORLD)
             views.clear()
@@ -130,8 +149,12 @@ class PasskeyBroker(QObject):
         frame_origin = origin(frame.url())
         top_origin = origin(view.page().mainFrame().url())
         if frame_origin != top_origin:
-            deliver(_error("NotAllowedError", "KeePassXC passkeys work in the page itself, "
-                                              "not in frames embedded from another site."))
+            deliver(
+                _error(
+                    "NotAllowedError",
+                    "KeePassXC passkeys work in the page itself, not in frames embedded from another site.",
+                )
+            )
         elif not isinstance(public_key, dict):
             deliver(_error("TypeError", "Unreadable passkey request."))
         else:
@@ -139,8 +162,9 @@ class PasskeyBroker(QObject):
             timeout = timeout if isinstance(timeout, int) and timeout > 0 else DEFAULT_TIMEOUT_MS
             self._ask(kind, public_key, frame_origin, deliver, timeout, retried=False)
 
-    def _ask(self, kind: str, public_key: dict[str, Any], frame_origin: str, deliver: Deliver,
-             timeout: int, retried: bool) -> None:
+    def _ask(
+        self, kind: str, public_key: dict[str, Any], frame_origin: str, deliver: Deliver, timeout: int, retried: bool
+    ) -> None:
         def answered(job: Job) -> None:
             if job.error is None:
                 response: dict[str, Any] = job.result
@@ -171,7 +195,7 @@ class PasskeyBroker(QObject):
         """KeePassXC is showing its unlock dialog (we asked): carry on when
         the database opens, or give up when the page's timeout runs out."""
         if self._client.locked is False:
-            retry()         # unlocked already, before we got to wait
+            retry()  # unlocked already, before we got to wait
             return
         waiting = True
         log.debug("passkey request waits for the database to be unlocked")

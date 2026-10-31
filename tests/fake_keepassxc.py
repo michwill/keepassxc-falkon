@@ -40,17 +40,17 @@ class FakeKeePassXC:
         self.path = path
         self.locked = False
         self.db_hash = "f" * 64
-        self.keys = {}                 # association id -> idKey
-        self.entries = []              # dicts: uuid, login, password, name, url
-        self.associate_as = "falkon-test"   # None: the user cancels the dialog
-        self.logins_delay = 0.0        # seconds — an access-confirm dialog
+        self.keys = {}  # association id -> idKey
+        self.entries = []  # dicts: uuid, login, password, name, url
+        self.associate_as = "falkon-test"  # None: the user cancels the dialog
+        self.logins_delay = 0.0  # seconds — an access-confirm dialog
         self.unlock_requests = 0
-        self.received = []             # (action, inner message or None)
-        self.received_at = []          # time.time() of each, same order
+        self.received = []  # (action, inner message or None)
+        self.received_at = []  # time.time() of each, same order
         self.unencrypted_nested = False
-        self.coalesce_next = None      # a message to glue in front of the next reply
-        self.passkey_response = {"errorCode": 15}   # what passkeys-get/-register answer
-        self._clients = {}             # clientID -> state
+        self.coalesce_next = None  # a message to glue in front of the next reply
+        self.passkey_response = {"errorCode": 15}  # what passkeys-get/-register answer
+        self._clients = {}  # clientID -> state
         self._conns = []
         self._lock = threading.Lock()
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -63,8 +63,14 @@ class FakeKeePassXC:
     # --- test controls ------------------------------------------------
 
     def add_entry(self, url, login, password, name=None, totp=None):
-        entry = {"uuid": uuidlib.uuid4().hex, "login": login, "password": password,
-                 "name": name or urlsplit(url).hostname, "url": url, "totp": totp}
+        entry = {
+            "uuid": uuidlib.uuid4().hex,
+            "login": login,
+            "password": password,
+            "name": name or urlsplit(url).hostname,
+            "url": url,
+            "totp": totp,
+        }
         self.entries.append(entry)
         return entry
 
@@ -160,8 +166,13 @@ class FakeKeePassXC:
             state["client_pk"] = message["publicKey"]
             state["box"] = sodium.Box(sk, unb64(message["publicKey"]))
             state["associated"] = False
-            return {"action": action, "publicKey": b64(pk), "nonce": b64(sodium.increment_nonce(nonce)),
-                    "success": "true", "version": "2.8.0"}
+            return {
+                "action": action,
+                "publicKey": b64(pk),
+                "nonce": b64(sodium.increment_nonce(nonce)),
+                "success": "true",
+                "version": "2.8.0",
+            }
 
         if self.locked:
             if state["client_pk"] is None:
@@ -205,9 +216,13 @@ class FakeKeePassXC:
             if self.logins_delay:
                 time.sleep(self.logins_delay)
             host = urlsplit(inner["url"]).hostname
-            found = [{k: e[k] for k in ("uuid", "login", "password", "name")} | {"group": "Browser"}
-                     | ({"totp": e["totp"]} if e.get("totp") else {})
-                     for e in self.entries if urlsplit(e["url"]).hostname == host]
+            found = [
+                {k: e[k] for k in ("uuid", "login", "password", "name")}
+                | {"group": "Browser"}
+                | ({"totp": e["totp"]} if e.get("totp") else {})
+                for e in self.entries
+                if urlsplit(e["url"]).hostname == host
+            ]
             if not found:
                 return self._error(action, 15)
             return respond(count=len(found), entries=found, hash=self.db_hash, id=inner.get("id", ""))
@@ -278,7 +293,7 @@ class FakeProcess:
         proc = ctx.Process(target=_child, args=(path, child), daemon=True)
         proc.start()
         self.__dict__["_proc"] = proc
-        assert self._rpc(None, None, None, already_sent=True) is None   # "ready"
+        assert self._rpc(None, None, None, already_sent=True) is None  # "ready"
 
     def _rpc(self, op, name, args, already_sent=False):
         if not already_sent:

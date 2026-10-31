@@ -23,7 +23,7 @@ def _item(data: bytes, i: int) -> tuple[Any, int]:
         size = 1 << (info - 24)
         if i + size > len(data):
             raise ValueError("truncated CBOR")
-        arg = int.from_bytes(data[i:i + size], "big")
+        arg = int.from_bytes(data[i : i + size], "big")
         i += size
     else:
         raise ValueError("unsupported CBOR item")
@@ -34,7 +34,7 @@ def _item(data: bytes, i: int) -> tuple[Any, int]:
     if major in (2, 3):
         if i + arg > len(data):
             raise ValueError("truncated CBOR")
-        chunk = bytes(data[i:i + arg])
+        chunk = bytes(data[i : i + arg])
         return (chunk if major == 2 else chunk.decode("utf-8")), i + arg
     if major == 4:
         items: list[Any] = []
@@ -49,7 +49,7 @@ def _item(data: bytes, i: int) -> tuple[Any, int]:
             mapping[key], i = _item(data, i)
         return mapping, i
     if major == 6:
-        return _item(data, i)           # a tag: the tagged value is what matters
+        return _item(data, i)  # a tag: the tagged value is what matters
     return {20: False, 21: True, 22: None}.get(arg, arg), i
 
 

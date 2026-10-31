@@ -25,8 +25,9 @@ class Probe(QObject):
     @Slot(str, result=str)
     def entries(self, url):
         entries = _autofill().passwordManager().getEntries(QUrl(url))
-        return json.dumps([{"id": e.id, "host": e.host, "username": e.username, "password": e.password}
-                           for e in entries])
+        return json.dumps(
+            [{"id": e.id, "host": e.host, "username": e.username, "password": e.password} for e in entries]
+        )
 
     @Slot(str, result=str)
     def usernames(self, url):
@@ -75,10 +76,11 @@ class UiProbe(QObject):
     @Slot(result=str)
     def settingsTexts(self):
         from keepassxc_falkon.settings import SettingsDialog
+
         plugin = _kpxc()
         dialog = SettingsDialog(plugin.client, plugin.store)
         texts = [label.text() for label in dialog.findChildren(QLabel) if label.text()]
-        self._dialog = dialog      # status probe answers asynchronously
+        self._dialog = dialog  # status probe answers asynchronously
         return json.dumps(texts)
 
     @Slot(result=str)
@@ -101,9 +103,17 @@ class UiProbe(QObject):
     def toolbarMenu(self):
         self._tmenu = QMenu()
         _kpxc().entries_menu.populate(self._tmenu, _current_view(), direct_fill=False)
-        return json.dumps([{"text": a.text(), "enabled": a.isEnabled(),
-                            "sub": [b.text() for b in sub.actions()] if (sub := _submenu(a)) else None}
-                           for a in self._tmenu.actions() if not a.isSeparator()])
+        return json.dumps(
+            [
+                {
+                    "text": a.text(),
+                    "enabled": a.isEnabled(),
+                    "sub": [b.text() for b in sub.actions()] if (sub := _submenu(a)) else None,
+                }
+                for a in self._tmenu.actions()
+                if not a.isSeparator()
+            ]
+        )
 
     @Slot(str, str, result=bool)
     def triggerToolbar(self, entry, action):
@@ -119,8 +129,9 @@ class UiProbe(QObject):
     @Slot(result=str)
     def clipboard(self):
         mime = QGuiApplication.clipboard().mimeData()
-        return json.dumps({"text": mime.text() if mime else "",
-                           "secret": bool(mime and mime.hasFormat("x-kde-passwordManagerHint"))})
+        return json.dumps(
+            {"text": mime.text() if mime else "", "secret": bool(mime and mime.hasFormat("x-kde-passwordManagerHint"))}
+        )
 
     @Slot(str, int, result=bool)
     def setOption(self, name, value):
@@ -131,8 +142,7 @@ class UiProbe(QObject):
     def button(self):
         button = next(iter(_kpxc()._buttons.values()))
         button.refresh()
-        shown = any(w.property("button-id") == button.id() and w.isVisible()
-                    for w in _window().findChildren(QWidget))
+        shown = any(w.property("button-id") == button.id() and w.isVisible() for w in _window().findChildren(QWidget))
         return json.dumps({"badge": button.badgeText(), "tip": button.toolTip(), "shown": shown})
 
 

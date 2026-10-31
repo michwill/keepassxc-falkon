@@ -63,8 +63,17 @@ CONFIRM = ("shift+Tab", "space")
 _PASS_ENV = {"PATH", "LANG", "LANGUAGE", "TERM", "USER", "LOGNAME", "SHELL", "TZ"}
 _SANDBOX_RUNTIME = "/run/kpxc-e2e"
 # Must not exist inside: their presence means the sandbox leaked.
-_SESSION_ENV = ("WAYLAND_DISPLAY", "XAUTHORITY", "SESSION_MANAGER", "SSH_AUTH_SOCK", "XDG_SESSION_ID",
-                "XDG_CURRENT_DESKTOP", "KDE_FULL_SESSION", "GNOME_KEYRING_CONTROL", "GPG_AGENT_INFO")
+_SESSION_ENV = (
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "SESSION_MANAGER",
+    "SSH_AUTH_SOCK",
+    "XDG_SESSION_ID",
+    "XDG_CURRENT_DESKTOP",
+    "KDE_FULL_SESSION",
+    "GNOME_KEYRING_CONTROL",
+    "GPG_AGENT_INFO",
+)
 
 PAGES = {
     "/classic": """<!doctype html><title>classic</title>
@@ -161,8 +170,8 @@ def totp_codes(secret=TOTP_SECRET, period=30):
         counter = int(time.time()) // period + step
         digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
         offset = digest[-1] & 0x0F
-        value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
-        codes.add(f"{value % 10 ** 6:06d}")
+        value = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+        codes.add(f"{value % 10**6:06d}")
     return codes
 
 
@@ -173,6 +182,7 @@ def free_port():
 
 
 # --- fixtures --------------------------------------------------------------
+
 
 def build_database(path, port):
     kp = create_database(path, password=DB_PASSWORD)
@@ -232,6 +242,7 @@ def serve(host, port):
 
 # --- CDP ---------------------------------------------------------------------
 
+
 class CDP:
     def __init__(self, ws_url):
         self.ws = websocket.create_connection(ws_url, timeout=30, suppress_origin=True)
@@ -266,8 +277,11 @@ class CDP:
             params["contextId"] = context_id
         result = self.call("Runtime.evaluate", **params)
         if "exceptionDetails" in result:
-            raise RuntimeError(result["exceptionDetails"].get("text", "JS exception") + ": " +
-                               json.dumps(result["exceptionDetails"].get("exception", {}).get("description")))
+            raise RuntimeError(
+                result["exceptionDetails"].get("text", "JS exception")
+                + ": "
+                + json.dumps(result["exceptionDetails"].get("exception", {}).get("description"))
+            )
         return result["result"].get("value")
 
     def frame_tree(self):
@@ -280,8 +294,9 @@ class CDP:
                 continue
             if isolated and aux.get("type") == "isolated":
                 try:
-                    if self.evaluate("!!(window.external && window.external.extra && "
-                                     "window.external.extra.kpxcprobe)", ctx["id"]):
+                    if self.evaluate(
+                        "!!(window.external && window.external.extra && window.external.extra.kpxcprobe)", ctx["id"]
+                    ):
                         return ctx["id"]
                 except RuntimeError:
                     continue
@@ -306,6 +321,7 @@ def wait_until(predicate, timeout=8.0, interval=0.2, what="condition"):
 
 # --- the run -------------------------------------------------------------------
 
+
 def sandbox_env(workdir):
     home = os.path.join(workdir, "home")
     env = {k: v for k, v in os.environ.items() if k in _PASS_ENV or k.startswith("LC_")}
@@ -328,11 +344,35 @@ def sandbox_env(workdir):
 
 
 def bwrap_command(workdir, env, argv):
-    cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/dev/shm",
-           "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/var/tmp",
-           "--perms", "0700", "--dir", _SANDBOX_RUNTIME,
-           "--bind", workdir, workdir,
-           "--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
+    cmd = [
+        "bwrap",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/dev/shm",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/run",
+        "--tmpfs",
+        "/var/tmp",
+        "--perms",
+        "0700",
+        "--dir",
+        _SANDBOX_RUNTIME,
+        "--bind",
+        workdir,
+        workdir,
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--clearenv",
+    ]
     for key, value in env.items():
         cmd += ["--setenv", key, value]
     return [*cmd, "--", *argv]
@@ -340,8 +380,12 @@ def bwrap_command(workdir, env, argv):
 
 def start_xvfb():
     read_fd, write_fd = os.pipe()
-    proc = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
-                            pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
+        pass_fds=(write_fd,),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     os.close(write_fd)
     with os.fdopen(read_fd) as f:
         number = f.readline().strip()
@@ -391,26 +435,64 @@ class Harness:
         self.kpxc_config = os.path.join(cfg, "keepassxc", "keepassxc.ini")
         self.kpxc_local_config = os.path.join(self.env["XDG_CACHE_HOME"], "keepassxc", "keepassxc.ini")
         # Quick Unlock asks Polkit (system bus) instead of the password; off.
-        write(self.kpxc_local_config, "\n".join([
-            "[Security]", "QuickUnlock=false", "LockDatabaseScreenLock=false", ""]))
-        write(self.kpxc_config, "\n".join([
-            "[General]", "ConfigVersion=2", "SingleInstance=false", "RememberLastDatabases=false",
-            "AutoSaveAfterEveryChange=true", "UpdateCheckMessageShown=true",
-            "[GUI]", "CheckForUpdates=false", "ShowTrayIcon=false",
-            "[Browser]", "Enabled=true", "AlwaysAllowAccess=true", "AlwaysAllowUpdate=true",
-            "UnlockDatabase=true", "UpdateBinaryPath=false", "Browser_AllowLocalhostWithPasskeys=true",
-            "[FdoSecrets]", "Enabled=false", "[SSHAgent]", "Enabled=false", ""]))
+        write(
+            self.kpxc_local_config, "\n".join(["[Security]", "QuickUnlock=false", "LockDatabaseScreenLock=false", ""])
+        )
+        write(
+            self.kpxc_config,
+            "\n".join(
+                [
+                    "[General]",
+                    "ConfigVersion=2",
+                    "SingleInstance=false",
+                    "RememberLastDatabases=false",
+                    "AutoSaveAfterEveryChange=true",
+                    "UpdateCheckMessageShown=true",
+                    "[GUI]",
+                    "CheckForUpdates=false",
+                    "ShowTrayIcon=false",
+                    "[Browser]",
+                    "Enabled=true",
+                    "AlwaysAllowAccess=true",
+                    "AlwaysAllowUpdate=true",
+                    "UnlockDatabase=true",
+                    "UpdateBinaryPath=false",
+                    "Browser_AllowLocalhostWithPasskeys=true",
+                    "[FdoSecrets]",
+                    "Enabled=false",
+                    "[SSHAgent]",
+                    "Enabled=false",
+                    "",
+                ]
+            ),
+        )
         profile = os.path.join(cfg, "falkon", "profiles", "e2e")
-        version = subprocess.run(["falkon", "--version"], env=self.env, capture_output=True,
-                                 text=True).stdout.split()[-1]
+        version = subprocess.run(["falkon", "--version"], env=self.env, capture_output=True, text=True).stdout.split()[
+            -1
+        ]
         write(os.path.join(profile, "version"), version + "\n")
-        write(os.path.join(profile, "settings.ini"), "\n".join([
-            "[Plugin-Settings]", "AllowedPlugins=python:keepassxc_falkon, python:kpxc_e2e_probe",
-            "[PasswordManager]", "Backend=keepassxc",
-            "[Web-Browser-Settings]", "AutoCompletePasswords=true", "SavePasswordsOnSites=true",
-            "[Web-URL-Settings]", "homepage=about:blank", "afterLaunch=0", ""]))
-        write(os.path.join(profile, "extensions", "keepassxc.json"), json.dumps(
-            {"associations": {self.db_hash: {"id": ASSOC_ID, "key": key_b64}}, "options": {}}))
+        write(
+            os.path.join(profile, "settings.ini"),
+            "\n".join(
+                [
+                    "[Plugin-Settings]",
+                    "AllowedPlugins=python:keepassxc_falkon, python:kpxc_e2e_probe",
+                    "[PasswordManager]",
+                    "Backend=keepassxc",
+                    "[Web-Browser-Settings]",
+                    "AutoCompletePasswords=true",
+                    "SavePasswordsOnSites=true",
+                    "[Web-URL-Settings]",
+                    "homepage=about:blank",
+                    "afterLaunch=0",
+                    "",
+                ]
+            ),
+        )
+        write(
+            os.path.join(profile, "extensions", "keepassxc.json"),
+            json.dumps({"associations": {self.db_hash: {"id": ASSOC_ID, "key": key_b64}}, "options": {}}),
+        )
         plugins = os.path.join(cfg, "falkon", "plugins")
         os.makedirs(plugins, exist_ok=True)
         os.symlink(os.path.join(REPO, "keepassxc_falkon"), os.path.join(plugins, "keepassxc_falkon"))
@@ -426,22 +508,35 @@ class Harness:
         kpxc_env = dict(self.env, QT_QPA_PLATFORM="xcb")
 
         with open(os.path.join(self.work, "keepassxc.log"), "w") as log:
-            kpxc = subprocess.Popen(["keepassxc", "--config", self.kpxc_config,
-                                     "--localconfig", self.kpxc_local_config, "--pw-stdin", self.db_path],
-                                    env=kpxc_env, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-                                    text=True)
-        assert kpxc.stdin is not None       # stdin=PIPE
+            kpxc = subprocess.Popen(
+                [
+                    "keepassxc",
+                    "--config",
+                    self.kpxc_config,
+                    "--localconfig",
+                    self.kpxc_local_config,
+                    "--pw-stdin",
+                    self.db_path,
+                ],
+                env=kpxc_env,
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        assert kpxc.stdin is not None  # stdin=PIPE
         kpxc.stdin.write(DB_PASSWORD + "\n")
         kpxc.stdin.close()
         self.procs.append(kpxc)
         sock = os.path.join(self.runtime, "app", "org.keepassxc.KeePassXC", "org.keepassxc.KeePassXC.BrowserServer")
         wait_until(lambda: os.path.exists(sock), timeout=20, what="KeePassXC browser socket")
-        time.sleep(2)   # the socket comes up before --pw-stdin has opened the database
+        time.sleep(2)  # the socket comes up before --pw-stdin has opened the database
 
         self.falkon_log = os.path.join(self.work, "falkon.log")
         with open(self.falkon_log, "w") as flog:
-            falkon = subprocess.Popen(["falkon", "-r", "-p", "e2e", "about:blank"], env=self.env,
-                                      stdout=flog, stderr=subprocess.STDOUT)
+            falkon = subprocess.Popen(
+                ["falkon", "-r", "-p", "e2e", "about:blank"], env=self.env, stdout=flog, stderr=subprocess.STDOUT
+            )
         self.procs.append(falkon)
 
         def page_target():
@@ -460,8 +555,15 @@ class Harness:
         self.x.type_text("Unlock Database - KeePassXC", DB_PASSWORD)
 
     def dbus(self, method, *args):
-        cmd = ["dbus-send", "--session", "--print-reply", "--dest=org.keepassxc.KeePassXC.MainWindow",
-               "/keepassxc", f"org.keepassxc.KeePassXC.MainWindow.{method}", *args]
+        cmd = [
+            "dbus-send",
+            "--session",
+            "--print-reply",
+            "--dest=org.keepassxc.KeePassXC.MainWindow",
+            "/keepassxc",
+            f"org.keepassxc.KeePassXC.MainWindow.{method}",
+            *args,
+        ]
         return subprocess.run(cmd, env=self.env, capture_output=True, text=True, check=True).stdout
 
     def stop(self):
@@ -480,8 +582,10 @@ class Harness:
 
     def navigate(self, url):
         self.cdp.call("Page.navigate", url=url)
-        wait_until(lambda: self.cdp.evaluate(f"location.href === {json.dumps(url)} && "
-                                             "document.readyState === 'complete'"), what=f"load of {url}")
+        wait_until(
+            lambda: self.cdp.evaluate(f"location.href === {json.dumps(url)} && document.readyState === 'complete'"),
+            what=f"load of {url}",
+        )
         return self.cdp.frame_tree()
 
     def main_eval(self, expr):
@@ -497,9 +601,11 @@ class Harness:
 
 
 def fields(h, user_sel, pass_sel, root="document"):
-    return h.main_eval(f"(function(){{var r={root};var u=r.querySelector({json.dumps(user_sel)}),"
-                       f"p=r.querySelector({json.dumps(pass_sel)});"
-                       "return [u ? u.value : null, p ? p.value : null];})()")
+    return h.main_eval(
+        f"(function(){{var r={root};var u=r.querySelector({json.dumps(user_sel)}),"
+        f"p=r.querySelector({json.dumps(pass_sel)});"
+        "return [u ? u.value : null, p ? p.value : null];})()"
+    )
 
 
 def run_checks(h):
@@ -516,6 +622,7 @@ def run_checks(h):
                 results.append((name, True, ""))
                 print(f"ok    {name}", flush=True)
             return fn
+
         return deco
 
     single = lambda path: h.url("127.0.0.1", path)  # noqa: E731
@@ -528,29 +635,38 @@ def run_checks(h):
     @check("classic form is filled on load")
     def _():
         h.navigate(single("/classic"))
-        wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"],
-                   what="filled classic form")
+        wait_until(
+            lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"], what="filled classic form"
+        )
 
     @check("late, nameless, formless fields are filled and page listeners see it")
     def _():
         h.navigate(single("/spa"))
-        wait_until(lambda: fields(h, "#app input:not([type=password])", "#app input[type=password]")
-                   == ["alice", "s3cret"], what="filled SPA fields")
+        wait_until(
+            lambda: fields(h, "#app input:not([type=password])", "#app input[type=password]") == ["alice", "s3cret"],
+            what="filled SPA fields",
+        )
         assert h.main_eval("window.__events") >= 2
 
     @check("fields inside an open shadow root are filled")
     def _():
         h.navigate(single("/shadow"))
-        wait_until(lambda: fields(h, "input[type=email]", "input[type=password]",
-                                  root="document.querySelector('x-login').shadowRoot") == ["alice", "s3cret"],
-                   what="filled shadow-DOM fields")
+        wait_until(
+            lambda: (
+                fields(
+                    h, "input[type=email]", "input[type=password]", root="document.querySelector('x-login').shadowRoot"
+                )
+                == ["alice", "s3cret"]
+            ),
+            what="filled shadow-DOM fields",
+        )
 
     @check("a page without login fields doesn't query KeePassXC")
     def _():
         url = single("/plain")
         h.navigate(url)
         time.sleep(1.5)
-        assert json.loads(h.probe("usernames", url)) == []      # alice would show if it had asked
+        assert json.loads(h.probe("usernames", url)) == []  # alice would show if it had asked
 
     @check("sign-up form (new-password fields) is left alone")
     def _():
@@ -569,13 +685,17 @@ def run_checks(h):
     def _():
         h.navigate(h.url("127.0.0.2", "/classic"))
         labels = json.loads(h.probe("menuLabels", obj="kpxcui"))
-        assert labels[:2] == ["bob \u2014 Multi B", "carol \u2014 Multi C"] or \
-            labels[:2] == ["carol \u2014 Multi C", "bob \u2014 Multi B"], labels
+        assert labels[:2] == ["bob \u2014 Multi B", "carol \u2014 Multi C"] or labels[:2] == [
+            "carol \u2014 Multi C",
+            "bob \u2014 Multi B",
+        ], labels
         assert labels[-1] == "KeePassXC settings\u2026", labels
         pick = 0 if labels[0].startswith("carol") else 1
         h.probe("triggerMenu", pick, obj="kpxcui")
-        wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["carol", "pw-carol"],
-                   what="fill from the menu")
+        wait_until(
+            lambda: fields(h, "input[name=user]", "input[name=pass]") == ["carol", "pw-carol"],
+            what="fill from the menu",
+        )
 
     @check("toolbar button is on the navigation bar")
     def _():
@@ -584,8 +704,9 @@ def run_checks(h):
     @check("toolbar button: badge counts the login iframe's entry")
     def _():
         h.navigate(h.url("127.0.0.2", "/frame"))
-        wait_until(lambda: json.loads(h.probe("button", obj="kpxcui"))["badge"] == "1",
-                   what="badge for the iframe's entry")
+        wait_until(
+            lambda: json.loads(h.probe("button", obj="kpxcui"))["badge"] == "1", what="badge for the iframe's entry"
+        )
 
     @check("toolbar menu groups the page's and the login iframe's entries")
     def _():
@@ -612,14 +733,17 @@ def run_checks(h):
         h.probe("setOption", "clipboard_clear_seconds", 2, obj="kpxcui")
         h.probe("triggerToolbar", "alice \u2014 Single", "Copy password", obj="kpxcui")
         assert json.loads(h.probe("clipboard", obj="kpxcui")) == {"text": "s3cret", "secret": True}
-        wait_until(lambda: json.loads(h.probe("clipboard", obj="kpxcui"))["text"] == "",
-                   timeout=5, what="clipboard cleared")
+        wait_until(
+            lambda: json.loads(h.probe("clipboard", obj="kpxcui"))["text"] == "", timeout=5, what="clipboard cleared"
+        )
 
     @check("copy TOTP: the entry's current code")
     def _():
         h.probe("triggerToolbar", "alice \u2014 Single", "Copy TOTP", obj="kpxcui")
-        clip = wait_until(lambda: (lambda c: c if c["text"] else None)(
-            json.loads(h.probe("clipboard", obj="kpxcui"))), what="TOTP on the clipboard")
+        clip = wait_until(
+            lambda: (lambda c: c if c["text"] else None)(json.loads(h.probe("clipboard", obj="kpxcui"))),
+            what="TOTP on the clipboard",
+        )
         assert clip["secret"], (clip, totp_codes())
         assert clip["text"] in totp_codes(), (clip, totp_codes())
 
@@ -630,15 +754,20 @@ def run_checks(h):
         def iframe_values():
             children = h.cdp.frame_tree().get("childFrames") or []
             ctx = children and h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
-            return ctx and h.cdp.evaluate("[document.querySelector('input[name=user]').value,"
-                                          "document.querySelector('input[name=pass]').value]", ctx)
+            return ctx and h.cdp.evaluate(
+                "[document.querySelector('input[name=user]').value,document.querySelector('input[name=pass]').value]",
+                ctx,
+            )
 
         wait_until(lambda: iframe_values() == ["alice", "s3cret"], what="auto-filled iframe")
         h.cdp.evaluate("void 0")
         children = h.cdp.frame_tree()["childFrames"]
         ctx = h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
-        h.cdp.evaluate("document.querySelector('input[name=user]').value = 'someone';"
-                       "document.querySelector('input[name=pass]').value = 'else'", ctx)
+        h.cdp.evaluate(
+            "document.querySelector('input[name=user]').value = 'someone';"
+            "document.querySelector('input[name=pass]').value = 'else'",
+            ctx,
+        )
         h.probe("toolbarMenu", obj="kpxcui")
         h.probe("triggerToolbar", "alice \u2014 Single", "Fill", obj="kpxcui")
         wait_until(lambda: iframe_values() == ["alice", "s3cret"], what="iframe refilled from the menu")
@@ -647,10 +776,15 @@ def run_checks(h):
     def _():
         h.navigate(single("/classic"))
         h.probe("settingsTexts", obj="kpxcui")
-        expected = {"KeePassXC is running", "Database is unlocked",
-                    f"Connected as \u201c{ASSOC_ID}\u201d", "Falkon stores passwords in KeePassXC"}
-        wait_until(lambda: expected <= set(json.loads(h.probe("settingsTextsNow", obj="kpxcui"))),
-                   what="settings status")
+        expected = {
+            "KeePassXC is running",
+            "Database is unlocked",
+            f"Connected as \u201c{ASSOC_ID}\u201d",
+            "Falkon stores passwords in KeePassXC",
+        }
+        wait_until(
+            lambda: expected <= set(json.loads(h.probe("settingsTextsNow", obj="kpxcui"))), what="settings status"
+        )
 
     @check("cross-origin iframe is filled with its own origin's entry")
     def _():
@@ -663,8 +797,10 @@ def run_checks(h):
             ctx = h.cdp.context_for(children[0]["frame"]["id"], isolated=False)
             if ctx is None:
                 return None
-            return h.cdp.evaluate("[document.querySelector('input[name=user]').value,"
-                                  "document.querySelector('input[name=pass]').value]", ctx)
+            return h.cdp.evaluate(
+                "[document.querySelector('input[name=user]').value,document.querySelector('input[name=pass]').value]",
+                ctx,
+            )
 
         assert tree is not None
         wait_until(lambda: iframe_values() == ["alice", "s3cret"], what="filled iframe")
@@ -675,25 +811,38 @@ def run_checks(h):
         h.navigate(url)
         assert json.loads(h.probe("entries", url)) == []
         h.probe("addEntry", url, "dave", "pw-dave")
-        wait_until(lambda: [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))]
-                   == [("dave", "pw-dave")], what="saved entry")
+        wait_until(
+            lambda: (
+                [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))] == [("dave", "pw-dave")]
+            ),
+            what="saved entry",
+        )
 
     @check("Falkon's update flow changes the password of that entry")
     def _():
         url = h.url("localhost", "/classic")
         assert h.probe("updatePassword", url, "dave", "pw-dave-2") is True
-        wait_until(lambda: [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))]
-                   == [("dave", "pw-dave-2")], what="updated entry")
+        wait_until(
+            lambda: (
+                [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))] == [("dave", "pw-dave-2")]
+            ),
+            what="updated entry",
+        )
 
     @check("saves reached the database file")
     def _():
         # KeePassXC files browser-saved entries in this group, titled by host,
         # and autosaves shortly after the change.
         def on_disk():
-            out = subprocess.run(["keepassxc-cli", "show", "-q", "-s", h.db_path,
-                                  "KeePassXC-Browser Passwords/localhost"],
-                                 input=DB_PASSWORD + "\n", capture_output=True, text=True, env=h.env)
+            out = subprocess.run(
+                ["keepassxc-cli", "show", "-q", "-s", h.db_path, "KeePassXC-Browser Passwords/localhost"],
+                input=DB_PASSWORD + "\n",
+                capture_output=True,
+                text=True,
+                env=h.env,
+            )
             return "dave" in out.stdout and "pw-dave-2" in out.stdout
+
         wait_until(on_disk, timeout=15, interval=1, what="entry in the .kdbx file")
 
     @check("locked database: no fill; unlocking fills the open page")
@@ -704,8 +853,11 @@ def run_checks(h):
         time.sleep(2)
         assert fields(h, "input[name=user]", "input[name=pass]") == ["", ""]
         h.unlock()
-        wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"],
-                   timeout=10, what="fill after unlock")
+        wait_until(
+            lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"],
+            timeout=10,
+            what="fill after unlock",
+        )
 
     @check("a save made while locked is written once unlocked")
     def _():
@@ -716,9 +868,13 @@ def run_checks(h):
         h.probe("addEntry", url, "erin", "pw-erin")
         time.sleep(1.5)
         h.unlock()
-        wait_until(lambda: ("erin", "pw-erin") in
-                   [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))],
-                   timeout=10, what="deferred save")
+        wait_until(
+            lambda: (
+                ("erin", "pw-erin") in [(e["username"], e["password"]) for e in json.loads(h.probe("entries", url))]
+            ),
+            timeout=10,
+            what="deferred save",
+        )
 
     passkey_url = h.url("localhost", "/passkey")
     origin = f"http://localhost:{h.port}"
@@ -734,13 +890,18 @@ def run_checks(h):
     @check("passkeys: the page sees a platform authenticator, no conditional UI")
     def _():
         h.navigate(passkey_url)
-        got = h.cdp.evaluate("Promise.all([PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),"
-                             "PublicKeyCredential.isConditionalMediationAvailable()])", await_promise=True)
+        got = h.cdp.evaluate(
+            "Promise.all([PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),"
+            "PublicKeyCredential.isConditionalMediationAvailable()])",
+            await_promise=True,
+        )
         assert got == [True, False], got
         aborted = h.cdp.evaluate(
             "(function(){var c=new AbortController();var p=navigator.credentials.get({mediation:'conditional',"
             "signal:c.signal,publicKey:{challenge:new Uint8Array(32)}}).then(function(){return 'resolved'},"
-            "function(e){return e.name});c.abort();return p;})()", await_promise=True)
+            "function(e){return e.name});c.abort();return p;})()",
+            await_promise=True,
+        )
         assert aborted == "AbortError", aborted
 
     @check("passkeys: register in KeePassXC (verified like a relying party)")
@@ -764,7 +925,7 @@ def run_checks(h):
         assert auth_data[32] & 0x01, ("user present flag", auth_data[32])
         assert auth_data[32] & 0x40, ("attested credential data flag", auth_data[32])
         cred_len = int.from_bytes(auth_data[53:55], "big")
-        assert auth_data[55:55 + cred_len] == b64u(reg["id"]), "credential id in authenticator data"
+        assert auth_data[55 : 55 + cred_len] == b64u(reg["id"]), "credential id in authenticator data"
         assert attested_auth_data(b64u(reg["json"]["response"]["attestationObject"])) == auth_data
         assert b64u(reg["json"]["response"]["authenticatorData"]) == auth_data, "toJSON vs getter"
         key = load_der_public_key(b64u(reg["publicKey"]))
@@ -775,10 +936,23 @@ def run_checks(h):
     @check("passkeys: the passkey is in the database file")
     def _():
         def stored():
-            out = subprocess.run(["keepassxc-cli", "show", "-q", "-a", "KPEX_PASSKEY_CREDENTIAL_ID", h.db_path,
-                                  "KeePassXC-Browser Passkeys/E2E RP (Passkey)"],
-                                 input=DB_PASSWORD + "\n", capture_output=True, text=True, env=h.env)
+            out = subprocess.run(
+                [
+                    "keepassxc-cli",
+                    "show",
+                    "-q",
+                    "-a",
+                    "KPEX_PASSKEY_CREDENTIAL_ID",
+                    h.db_path,
+                    "KeePassXC-Browser Passkeys/E2E RP (Passkey)",
+                ],
+                input=DB_PASSWORD + "\n",
+                capture_output=True,
+                text=True,
+                env=h.env,
+            )
             return out.stdout.strip() == stash["id"]
+
         try:
             wait_until(stored, timeout=15, interval=1, what="passkey entry on disk")
         except AssertionError as e:
@@ -803,8 +977,9 @@ def run_checks(h):
         auth_data = b64u(login["authenticatorData"])
         assert auth_data[:32] == rp_id_hash, ("rpIdHash", auth_data.hex())
         assert auth_data[32] & 0x01, ("user present flag", auth_data[32])
-        stash["key"].verify(b64u(login["signature"]), auth_data + hashlib.sha256(client_json).digest(),
-                            ec.ECDSA(hashes.SHA256()))
+        stash["key"].verify(
+            b64u(login["signature"]), auth_data + hashlib.sha256(client_json).digest(), ec.ECDSA(hashes.SHA256())
+        )
 
     @check("passkeys: discoverable sign-in (no allowCredentials)")
     def _():
@@ -875,8 +1050,12 @@ def run_checks(h):
             kp = PyKeePass(h.db_path, password=DB_PASSWORD)
             frank = kp.find_entries(username="frank", first=True)
             passkey = kp.find_entries(title="E2E RP 2 (Passkey)", first=True)
-            return (frank is not None and frank.password == "pw-frank" and passkey is not None
-                    and passkey.get_custom_property("KPEX_PASSKEY_CREDENTIAL_ID") == reg["id"])
+            return (
+                frank is not None
+                and frank.password == "pw-frank"
+                and passkey is not None
+                and passkey.get_custom_property("KPEX_PASSKEY_CREDENTIAL_ID") == reg["id"]
+            )
 
         wait_until(both_on_disk, timeout=20, interval=1, what="password and passkey in the .kdbx file")
 

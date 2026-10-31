@@ -39,6 +39,7 @@ def process_until(predicate, timeout=5.0):
 def sock_path(tmp_path):
     # Unix socket paths are length-limited; tmp_path can be long.
     import tempfile
+
     d = tempfile.mkdtemp(prefix="kpxc-")
     yield os.path.join(d, "s")
     with contextlib.suppress(OSError):

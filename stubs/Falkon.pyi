@@ -30,7 +30,7 @@ class PluginInterface(_Wrapper):
     def populateWebViewMenu(self, menu: QMenu, view: WebView, r: WebHitTestResult) -> None: ...
 
 class PasswordEntry(_Wrapper):
-    id: typing.Any          # QVariant: whatever the backend stored
+    id: typing.Any  # QVariant: whatever the backend stored
     host: str
     username: str
     password: str

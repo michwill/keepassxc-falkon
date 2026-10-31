@@ -64,7 +64,7 @@ def frames_at(views: list[QWebEngineView], key: QUrl) -> list[tuple[QWebEngineFr
         try:
             found += [(f, view) for f in frames_of(view.page()) if page_key(f.url()) == key]
         except RuntimeError:
-            continue    # a view Qt already deleted
+            continue  # a view Qt already deleted
     return found
 
 
@@ -75,16 +75,21 @@ def fill_script(creds: Mapping[str, object], token: str | None = None) -> str:
 
 
 class Filler(QObject):
-    lookedUp = Signal()     # a page's login lookup finished (toolbar badge)
+    lookedUp = Signal()  # a page's login lookup finished (toolbar badge)
 
-    def __init__(self, client: "KeePassXCClient", store: "Store", parent: QObject | None = None,
-                 views: Callable[[], list[QWebEngineView]] = web_views) -> None:
+    def __init__(
+        self,
+        client: "KeePassXCClient",
+        store: "Store",
+        parent: QObject | None = None,
+        views: Callable[[], list[QWebEngineView]] = web_views,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._store = store
         self._views = views
         self._last_unlock_request = 0.0
-        self._form_pages: OrderedDict[str, bool] = OrderedDict()   # lookup URLs that showed login fields
+        self._form_pages: OrderedDict[str, bool] = OrderedDict()  # lookup URLs that showed login fields
         client.databaseUnlocked.connect(self.rescan_all)
 
     # --- reports from pages -------------------------------------------
@@ -100,7 +105,7 @@ class Filler(QObject):
         key = page_key(url)
         _views = self._views()
         if not frames_at(_views, key):
-            return      # not a frame we can see (navigated away already?)
+            return  # not a frame we can see (navigated away already?)
         lookup = lookup_url(url)
         self._form_pages[lookup] = True
         self._form_pages.move_to_end(lookup)
@@ -122,7 +127,7 @@ class Filler(QObject):
         if not logins or not autocomplete_enabled():
             return
         if len(logins) > 1 and not self._store.option("fill_first_of_many"):
-            return      # several accounts: the user picks (key icon / context menu)
+            return  # several accounts: the user picks (key icon / context menu)
         best = logins[0]
         creds = {"username": best.login, "password": best.password, "overwrite": False}
         views = self._views()
@@ -158,7 +163,7 @@ class Filler(QObject):
                     if is_web(frame.url()):
                         frame.runJavaScript("window.__kpxcFalkon && window.__kpxcFalkon.rescan()", SAFE_WORLD)
             except RuntimeError:
-                continue    # a view Qt already deleted
+                continue  # a view Qt already deleted
 
 
 def autocomplete_enabled() -> bool:

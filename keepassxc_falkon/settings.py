@@ -36,8 +36,13 @@ def _icon(ok: bool | None) -> QPixmap:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, client: KeePassXCClient, store: Store, parent: QWidget | None = None,
-                 on_passkeys_toggled: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        client: KeePassXCClient,
+        store: Store,
+        parent: QWidget | None = None,
+        on_passkeys_toggled: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._store = store
@@ -95,9 +100,11 @@ class SettingsDialog(QDialog):
         clear.valueChanged.connect(lambda v: store.set_option("clipboard_clear_seconds", v))
         clear_row.addWidget(clear)
         clear_row.addStretch(1)
-        note = QLabel("Filling on page load follows Falkon's \"Autocomplete passwords\" setting. "
-                      "With several matches, pick an account from the KeePassXC toolbar button, "
-                      "the key icon in the address bar, or the right-click menu of a login field.")
+        note = QLabel(
+            'Filling on page load follows Falkon\'s "Autocomplete passwords" setting. '
+            "With several matches, pick an account from the KeePassXC toolbar button, "
+            "the key icon in the address bar, or the right-click menu of a login field."
+        )
         note.setWordWrap(True)
         for w in (self._unlock_opt, self._many_opt, self._passkeys_opt):
             opt.addWidget(w)
@@ -145,8 +152,12 @@ class SettingsDialog(QDialog):
         elif c.running:
             self._set("running", True, "KeePassXC is running")
         else:
-            self._set("running", False, "KeePassXC isn't running, or its browser integration is off "
-                                        "(KeePassXC → Settings → Browser Integration)")
+            self._set(
+                "running",
+                False,
+                "KeePassXC isn't running, or its browser integration is off "
+                "(KeePassXC → Settings → Browser Integration)",
+            )
 
         if not c.running or c.locked is None:
             self._set("database", None, "Database: unknown")
@@ -164,8 +175,11 @@ class SettingsDialog(QDialog):
 
         active = self._active_backend()
         is_ours = active == BACKEND_ID
-        self._set("backend", is_ours, "Falkon stores passwords in KeePassXC" if is_ours
-                  else "Falkon's password backend is not KeePassXC")
+        self._set(
+            "backend",
+            is_ours,
+            "Falkon stores passwords in KeePassXC" if is_ours else "Falkon's password backend is not KeePassXC",
+        )
 
         self._connect.setEnabled(bool(c.running) and not c.associated)
         self._unlock.setEnabled(bool(c.running) and c.locked is not False)

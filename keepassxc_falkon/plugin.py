@@ -25,9 +25,16 @@ _FILL_SCRIPT = "_keepassxc_falkon_fill"
 _PASSKEYS_SCRIPT = "_keepassxc_falkon_passkeys"
 _PAGE_WORLD = QWebEngineScript.ScriptWorldId.MainWorld
 # Falkon's NavigationBar::loadSettings() defaults, for a never-customized bar.
-_DEFAULT_TOOLBAR = ["button-backforward", "button-reloadstop", "button-home", "locationbar",
-                    "button-downloads", "adblock-icon", "button-tools"]
-_BRIDGE_ID = "keepassxc"     # window.external.extra.keepassxc in SafeJsWorld
+_DEFAULT_TOOLBAR = [
+    "button-backforward",
+    "button-reloadstop",
+    "button-home",
+    "locationbar",
+    "button-downloads",
+    "adblock-icon",
+    "button-tools",
+]
+_BRIDGE_ID = "keepassxc"  # window.external.extra.keepassxc in SafeJsWorld
 
 
 class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
@@ -56,7 +63,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         self._buttons: dict[Falkon.BrowserWindow, KeePassXCButton] = {}
         app.plugins().mainWindowCreated.connect(self._add_button)
         app.plugins().mainWindowDeleted.connect(self._remove_button)
-        for window in app.windows():     # enabled at runtime: windows already open
+        for window in app.windows():  # enabled at runtime: windows already open
             self._add_button(window)
 
         self.backend = KeePassXCBackend(self.client, self.filler, self.showSettings)
@@ -69,7 +76,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
             pm.switchBackend(BACKEND_ID)
         self.backend.starting = False
         if pm.activeBackend().name() == self.backend.name():
-            self.client.status()     # connect early so the first lookup is quick
+            self.client.status()  # connect early so the first lookup is quick
 
     def unload(self) -> None:
         app = Falkon.MainApplication.instance()
@@ -102,7 +109,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         if self.store.option("toolbar_button_placed"):
             return
         settings = Falkon.Settings.globalSettings()
-        saved = settings.value("NavigationBar/Layout")     # a list, a lone string, or unset
+        saved = settings.value("NavigationBar/Layout")  # a list, a lone string, or unset
         if isinstance(saved, str):
             layout = [saved]
         elif isinstance(saved, list) and saved:

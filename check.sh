@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")"
 py=.venv/bin
 "$py/ruff" check .
+"$py/ruff" format --check .
 "$py/mypy"
 "$py/ty" check
 QT_QPA_PLATFORM=offscreen "$py/python" -m pytest -q

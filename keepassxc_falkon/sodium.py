@@ -36,8 +36,13 @@ _lib = _load()
 
 _lib.crypto_box_keypair.argtypes = (ctypes.c_char_p, ctypes.c_char_p)
 _lib.crypto_box_easy.argtypes = (
-    ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulonglong,
-    ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_ulonglong,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+)
 _lib.crypto_box_open_easy.argtypes = _lib.crypto_box_easy.argtypes
 
 

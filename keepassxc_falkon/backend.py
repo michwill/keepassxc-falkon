@@ -49,15 +49,16 @@ def notify(text: str) -> None:
 
 
 class KeePassXCBackend(Falkon.PasswordBackend):
-    def __init__(self, client: KeePassXCClient, filler: Filler,
-                 open_settings: Callable[[QWidget | None], None]) -> None:
+    def __init__(
+        self, client: KeePassXCClient, filler: Filler, open_settings: Callable[[QWidget | None], None]
+    ) -> None:
         Falkon.PasswordBackend.__init__(self)
         self._client = client
         self._filler = filler
         self._open_settings = open_settings
-        self._origins: dict[str, str] = {}     # host key -> origin seen for it
-        self._pending_saves: list[Save] = []    # waiting for the database to unlock
-        self.starting = True        # no prompts while Falkon starts up
+        self._origins: dict[str, str] = {}  # host key -> origin seen for it
+        self._pending_saves: list[Save] = []  # waiting for the database to unlock
+        self.starting = True  # no prompts while Falkon starts up
         client.databaseUnlocked.connect(self._retry_saves)
 
     # --- identity / settings ------------------------------------------
@@ -155,7 +156,7 @@ class KeePassXCBackend(Falkon.PasswordBackend):
     def updateLastUsed(self, entry: Falkon.PasswordEntry) -> None:
         popup = QApplication.activePopupWidget()
         if popup is None or popup.metaObject().className() != "AutoFillWidget":
-            return      # Falkon's own page-load replay: the Filler handles that
+            return  # Falkon's own page-load replay: the Filler handles that
         window = Falkon.MainApplication.instance().getWindow()
         view = window.weView() if window is not None else None
         if view is not None:
