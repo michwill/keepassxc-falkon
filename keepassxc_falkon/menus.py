@@ -2,9 +2,9 @@
 
 Both list the entries for the current tab, grouped by site: the page itself,
 plus any frame on another site that showed login fields (a login iframe),
-each looked up for the URL Chromium reports for that frame. The toolbar menu
-offers Fill / Copy username / Copy password / Copy TOTP per entry; the
-context menu (you right-clicked a field) fills with one click.
+each looked up for the URL Chromium reports for that frame. In both, clicking
+an entry fills it; the toolbar menu also lists Copy username / Copy password
+/ Copy TOTP under each entry.
 """
 
 import os
@@ -21,7 +21,6 @@ from .filler import Filler, frames_of
 from .protocol import Job, KeePassXCClient, KeePassXCError, Login
 from .store import Store
 from .urls import is_web, lookup_url, origin
-from .widgets import SubMenu
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 WAIT_MS = 600
@@ -127,8 +126,10 @@ class EntriesMenu:
         elif problem is not None:
             self._add_problem(menu, problem)
         else:
-            for url, job in jobs:
+            for i, (url, job) in enumerate(jobs):
                 if len(jobs) > 1:
+                    if i and not direct_fill:
+                        menu.addSeparator()
                     header = menu.addAction(url.host())
                     header.setEnabled(False)
                     font = header.font()
@@ -168,7 +169,7 @@ class EntriesMenu:
             _info(menu, "No entries for this site")
             return
         logins: list[Login] = job.result
-        for login in logins:
+        for i, login in enumerate(logins):
             label = login.login or "(no username)"
             if login.name and login.name != login.login:
                 label += f" \u2014 {login.name}"
@@ -177,15 +178,25 @@ class EntriesMenu:
             if direct_fill:
                 menu.addAction(label).triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
                 continue
-            sub = SubMenu(label, menu)
-            menu.addMenu(sub)
-            sub.addAction("Fill").triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
-            sub.addAction("Copy username").triggered.connect(lambda _c=False, e=login: copy_text(e.login))
-            sub.addAction("Copy password").triggered.connect(
+            # No submenus: on a maximized window a submenu of this menu opened
+            # half off the right screen edge on the user's desktop (Falkon's own
+            # submenus flipped left fine; we never found why). So each entry is
+            # a group in the menu itself: its name, bold like a default action,
+            # fills it; its copy actions follow.
+            if i:
+                menu.addSeparator()
+            fill = menu.addAction(app_icon(), label)
+            font = fill.font()
+            font.setBold(True)
+            fill.setFont(font)
+            fill.triggered.connect(lambda _c=False, e=login: self._fill(view, url, e))
+            copy_icon = QIcon.fromTheme("edit-copy")
+            menu.addAction(copy_icon, "Copy username").triggered.connect(lambda _c=False, e=login: copy_text(e.login))
+            menu.addAction(copy_icon, "Copy password").triggered.connect(
                 lambda _c=False, e=login: copy_text(e.password, secret=True, clear_after_s=self._clear_after())
             )
             if login.has_totp:
-                sub.addAction("Copy TOTP").triggered.connect(lambda _c=False, e=login: self._copy_totp(e))
+                menu.addAction(copy_icon, "Copy TOTP").triggered.connect(lambda _c=False, e=login: self._copy_totp(e))
 
     def _fill(self, view: QWebEngineView, url: QUrl, login: Login) -> None:
         self._filler.fill_view(view, url, login.login, login.password)
@@ -251,7 +262,6 @@ class KeePassXCButton(Falkon.AbstractButtonInterface):
 
     def _on_clicked(self, controller: Falkon.AbstractButtonInterface.ClickController) -> None:
         view = self.webView()
-        # Parented to the window, like Falkon's own menus.
         menu = QMenu(view.window() if view is not None else None)
         if view is None:
             _info(menu, "No website in this tab")

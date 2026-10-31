@@ -794,29 +794,32 @@ def run_checks(h):
         badge = json.loads(h.probe("button", obj="kpxcui"))["badge"]
         assert badge == "3", badge  # bob and carol for the page, alice for the iframe
 
-    @check("toolbar menu groups the page's and the login iframe's entries")
+    @check("toolbar menu groups the page's and the login iframe's entries, copy actions under each")
     def _():
         items = json.loads(h.probe("toolbarMenu", obj="kpxcui"))
-        texts = [i["text"] for i in items]
-        assert texts[0] == "127.0.0.2", texts
-        assert "127.0.0.1" in texts, texts
-        split = texts.index("127.0.0.1")
-        assert sorted(texts[1:split]) == ["bob \u2014 Multi B", "carol \u2014 Multi C"], texts
-        assert texts[split + 1] == "alice \u2014 Single", texts
-        alice = items[split + 1]
-        assert alice["sub"] == ["Fill", "Copy username", "Copy password", "Copy TOTP"], alice
-        bob = next(i for i in items if i["text"].startswith("bob"))
-        assert bob["sub"] == ["Fill", "Copy username", "Copy password"], bob
-        assert texts[-1] == "KeePassXC settings\u2026", texts
+        groups: list[list[str]] = [[]]
+        for item in items:
+            if item == "-":
+                groups.append([])
+            else:
+                groups[-1].append(item)
+        assert len(groups) == 4, items
+        assert groups[0][0] == "~*127.0.0.2", items  # site headings: bold, disabled
+        bob = ["*bob \u2014 Multi B", "Copy username", "Copy password"]
+        carol = ["*carol \u2014 Multi C", "Copy username", "Copy password"]
+        assert sorted([groups[0][1:], groups[1]]) == [bob, carol], items
+        alice = ["*alice \u2014 Single", "Copy username", "Copy password", "Copy TOTP"]
+        assert groups[2] == ["~*127.0.0.1", *alice], items
+        assert groups[3] == ["KeePassXC settings\u2026"], items
 
-    @check("toolbar menu at the right edge: the account submenu stays on screen")
+    @check("toolbar menu on a maximized window: on screen, no submenus")
     def _():
-        g = json.loads(h.probe("toolbarSubmenuGeometry", obj="kpxcui"))
-        assert g["submenu"] is not None, g
-        sub_left, _, sub_width, _ = g["submenu"]
+        g = json.loads(h.probe("toolbarMenuGeometry", "", obj="kpxcui"))
+        assert g["submenus"] == [], g
+        left, _, width, _ = g["menu"]
         screen_left, _, screen_width, _ = g["screen"]
-        assert screen_left <= sub_left, g
-        assert sub_left + sub_width <= screen_left + screen_width, g
+        assert screen_left <= left, g
+        assert left + width <= screen_left + screen_width, g
 
     @check("copy username: plain text")
     def _():

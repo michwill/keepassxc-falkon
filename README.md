@@ -30,11 +30,11 @@ browser extension, no extra Python packages.
 - **Toolbar button** on the navigation bar: the badge shows how many entries
   match the current tab, and the icon dims when KeePassXC is locked, not
   running or not connected. Its menu lists the entries per site: the page
-  itself, plus any login iframe on another site. Each entry offers **Fill**,
-  **Copy username**, **Copy password** and, if the entry has one,
-  **Copy TOTP** (a fresh code from KeePassXC). Copied passwords and codes are
-  marked so clipboard managers skip them, and are cleared after 10 seconds
-  (configurable).
+  itself, plus any login iframe on another site. Click an entry (in bold) to
+  fill it; under it are **Copy username**, **Copy password** and, if the
+  entry has one, **Copy TOTP** (a fresh code from KeePassXC). Copied
+  passwords and codes are marked so clipboard managers skip them, and are
+  cleared after 10 seconds (configurable).
 - **Saves and updates** through Falkon's own *Remember / Update* bar. New
   logins go to KeePassXC's "KeePassXC-Browser Passwords" group; an existing
   entry with the same username is updated instead of duplicated.

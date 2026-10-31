@@ -67,9 +67,11 @@ def _current_view():
     return _window().weView()
 
 
-def _submenu(action):
-    menu = action.menu()
-    return menu if isinstance(menu, QMenu) else None
+def _describe(action):
+    if action.isSeparator():
+        return "-"
+    marks = ("~" if not action.isEnabled() else "") + ("*" if action.font().bold() else "")
+    return marks + action.text()
 
 
 class UiProbe(QObject):
@@ -103,29 +105,27 @@ class UiProbe(QObject):
 
     @Slot(result=str)
     def toolbarMenu(self):
+        """The toolbar menu's items, "-" for a separator; "*" marks a bold
+        (an entry's fill) item, "~" a disabled one."""
         self._tmenu = QMenu()
         _kpxc().entries_menu.populate(self._tmenu, _current_view(), direct_fill=False)
-        return json.dumps(
-            [
-                {
-                    "text": a.text(),
-                    "enabled": a.isEnabled(),
-                    "sub": [b.text() for b in sub.actions()] if (sub := _submenu(a)) else None,
-                }
-                for a in self._tmenu.actions()
-                if not a.isSeparator()
-            ]
-        )
+        return json.dumps([_describe(a) for a in self._tmenu.actions()])
 
     @Slot(str, str, result=bool)
     def triggerToolbar(self, entry, action):
-        for a in self._tmenu.actions():
-            sub = _submenu(a)
-            if a.text() == entry and sub is not None:
-                for b in sub.actions():
-                    if b.text() == action:
-                        b.trigger()
-                        return True
+        """Trigger ``action`` of the toolbar menu's ``entry``: "Fill" is the
+        entry itself, the copy actions follow it up to the next separator."""
+        actions = self._tmenu.actions()
+        start = next(i for i, a in enumerate(actions) if a.text() == entry)
+        if action == "Fill":
+            actions[start].trigger()
+            return True
+        for a in actions[start + 1 :]:
+            if a.isSeparator():
+                break
+            if a.text() == action:
+                a.trigger()
+                return True
         return False
 
     @Slot(result=str)
@@ -176,32 +176,27 @@ class UiProbe(QObject):
         action.trigger()
         return True
 
-    @Slot(result=str)
-    def toolbarSubmenuGeometry(self):
-        """Maximize the window, click the KeePassXC toolbar button, open the
-        first account's submenu as hovering would; report where things went."""
+    @Slot(str, result=str)
+    def toolbarMenuGeometry(self, grab_to):
+        """Maximize the window, click the KeePassXC toolbar button; report
+        where the menu went and whether it has submenus. With ``grab_to``,
+        also save a picture of the menu there."""
         window = _window()
         window.showMaximized()
         QTest.qWait(1000)
         avail = window.screen().availableGeometry()
         button = next(w for w in window.findChildren(QWidget) if w.property("button-id") == "keepassxc-falkon")
         QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-        QApplication.processEvents()
+        QTest.qWait(300)
         menu = QApplication.activePopupWidget()
         assert isinstance(menu, QMenu)
-        entry = next(a for a in menu.actions() if a.menu() is not None)
-        menu.setActiveAction(entry)
-        QTest.keyClick(menu, Qt.Key.Key_Right)
-        QApplication.processEvents()
-        sub = QApplication.activePopupWidget()
+        if grab_to:
+            menu.grab().save(grab_to)
         result = {
             "screen": avail.getRect(),
             "menu": menu.geometry().getRect(),
-            "submenu": sub.geometry().getRect() if isinstance(sub, QMenu) and sub is not menu else None,
-            "scale": window.screen().devicePixelRatio(),
+            "submenus": [a.text() for a in menu.actions() if a.menu() is not None],
         }
-        if isinstance(sub, QMenu):
-            sub.close()
         menu.close()
         return json.dumps(result)
 
