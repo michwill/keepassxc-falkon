@@ -167,7 +167,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(status)
         layout.addLayout(options)
         layout.addLayout(connections)
-        layout.addStretch(1)
         layout.addWidget(buttons)
 
         client.stateChanged.connect(self._render)

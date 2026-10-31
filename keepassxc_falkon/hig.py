@@ -3,13 +3,14 @@
 Spacing is set explicitly, derived from the font, instead of coming from the
 widget style: some themes (Kvantum's DoorMaker, for one) set layout margins
 and spacing to 2 px, which crams any dialog that relies on them. The rhythm
-follows the GNOME 2 HIG, scaled to the font:
+is GNOME 2 HIG's "paragraph" rule with the proportions qeth's dialogs settled
+on (qeth/dialog.py), scaled to the font:
 
 - a border of half a line-height around the dialog,
 - a third of a line-height between related rows ("within a paragraph"),
 - twice that between sections and above the button row,
-- sections headed by a bold label with their content indented, rather than
-  framed group boxes.
+- sections headed by a bold label rather than framed group boxes, their
+  content flush with the heading (indenting it as well read as too airy).
 """
 
 from PySide6.QtWidgets import QBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -50,7 +51,7 @@ def section(parent: QWidget, title: str) -> tuple[QVBoxLayout, QVBoxLayout]:
     outer.setSpacing(item_spacing(parent))
     outer.addWidget(heading)
     body = QVBoxLayout()
-    body.setContentsMargins(group_spacing(parent), 0, 0, 0)
+    body.setContentsMargins(0, 0, 0, 0)
     body.setSpacing(item_spacing(parent))
     outer.addLayout(body)
     return outer, body
