@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import QDir, QObject, QStandardPaths, QTimer, Signal
 from PySide6.QtNetwork import QLocalSocket
@@ -58,6 +59,10 @@ PROTOCOL_ERROR = -5
 # A request that can open a dialog in KeePassXC waits for the user.
 INTERACTIVE_TIMEOUT_MS = 5 * 60 * 1000
 QUICK_TIMEOUT_MS = 15 * 1000
+# KeePassXC's answer for a site is reused this long, counted from when it
+# arrives (so from the user's click if KeePassXC asked): an "Allow" without
+# "Remember" isn't asked again right away, from another page of the site or
+# when the page changes its address.
 CACHE_TTL_S = 30
 MAX_BUFFER = 8 * 1024 * 1024
 # KeePassXC saves 150 ms after a change, on a worker thread, while its main
@@ -119,6 +124,13 @@ def socket_paths() -> list[str]:
     snap = os.path.expanduser(os.path.join("~", "snap", "keepassxc", "common", SERVER_NAME))
     paths += [snap, os.path.join(QDir.tempPath(), SERVER_NAME)]
     return paths
+
+
+def site_key(url: str) -> str:
+    """The site a lookup is cached under: scheme, host and port."""
+    parts = urlsplit(url)
+    port = f":{parts.port}" if parts.port is not None else ""
+    return f"{parts.scheme}://{parts.hostname or ''}{port}"
 
 
 def _b64(data: bytes) -> str:
@@ -208,8 +220,8 @@ class KeePassXCClient(QObject):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
-        self._cache: dict[str, tuple[float, list[Login]]] = {}
-        self._pending: dict[str, Job] = {}  # get-logins in progress, by url
+        self._cache: dict[str, tuple[float, list[Login]]] = {}  # by site_key
+        self._pending: dict[str, Job] = {}  # get-logins in progress, by site_key
         self._associate_after_unlock = False
         self._last_write: float | None = None  # when our last change was answered
         # Session state, reset whenever the connection drops.
@@ -226,20 +238,22 @@ class KeePassXCClient(QObject):
     # block on it with ``wait()``.
 
     def get_logins(self, url: str, callback: Callback | None = None) -> Job:
-        """The entries KeePassXC offers for ``url`` (empty if none).
-        Answers from a short-lived cache; concurrent asks share one request."""
-        hit = self._cache.get(url)
+        """The entries KeePassXC offers for ``url`` (empty if none). Answers
+        from a short-lived per-site cache; concurrent asks for a site share
+        one request (and so at most one KeePassXC access dialog)."""
+        key = site_key(url)
+        hit = self._cache.get(key)
         if hit is not None and time.monotonic() - hit[0] < CACHE_TTL_S:
             return Job.finished(result=hit[1]).then(callback)
-        job = self._pending.get(url)
+        job = self._pending.get(key)
         if job is None or job.done:
             job = self._submit(self._get_logins(url))
-            self._pending[url] = job
-            job.then(lambda _j: self._pending.pop(url, None))
+            self._pending[key] = job
+            job.then(lambda _j: self._pending.pop(key, None))
         return job.then(callback)
 
     def cached_logins(self, url: str) -> list[Login] | None:
-        hit = self._cache.get(url)
+        hit = self._cache.get(site_key(url))
         return hit[1] if hit is not None else None
 
     def save_login(
@@ -323,13 +337,13 @@ class KeePassXCClient(QObject):
             logins = []
         else:
             logins = [Login.from_json(e) for e in reply.get("entries") or [] if isinstance(e, dict)]
-        self._cache[url] = (time.monotonic(), logins)
+        self._cache[site_key(url)] = (time.monotonic(), logins)
         return logins
 
     def _save_login(self, url: str, login: str, password: str, uuid: str | None, trigger_unlock: bool) -> Steps[str]:
         yield from self._session(trigger_unlock=trigger_unlock)
         if not uuid:
-            self._cache.pop(url, None)
+            self._cache.pop(site_key(url), None)
             for entry in (yield from self._get_logins(url)):
                 if entry.login == login:
                     if entry.password == password:

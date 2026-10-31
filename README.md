@@ -93,7 +93,9 @@ unlock, or forget connections.
 
 KeePassXC asks before giving Falkon a site's passwords for the first time; tick
 *Remember* in that dialog, or enable *Never ask before accessing credentials*
-in KeePassXC's browser-integration settings.
+in KeePassXC's browser-integration settings. If you allow without
+*Remember*, the plugin reuses KeePassXC's answer for that site for 30 seconds,
+so a right-click right after doesn't ask again.
 
 ## How it works
 

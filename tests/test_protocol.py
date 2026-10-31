@@ -94,6 +94,44 @@ def test_passkeys_on_a_locked_database_ask_to_unlock(client, fake):
     assert fake.unlock_requests == 1
 
 
+def test_lookups_are_cached_per_site_for_a_while(client, fake, monkeypatch):
+    fake.add_entry("https://example.com", "alice", "s3cret")
+    associate(client)
+    run(client, client.get_logins("https://example.com/login"))
+    fake.clear_received()
+    # Another page of the site, or the same page with a new address: no new
+    # request, so no second KeePassXC access dialog for an "Allow" without
+    # "Remember".
+    for url in ("https://example.com/login?step=2", "https://EXAMPLE.com/account#top"):
+        job = client.get_logins(url)
+        assert job.done
+        assert [e.login for e in job.result] == ["alice"]
+    assert fake.actions() == []
+    # A different port is a different site.
+    run(client, client.get_logins("https://example.com:8443/login"))
+    assert fake.actions() == ["get-logins"]
+    # And the answer expires.
+    monkeypatch.setattr(protocol, "CACHE_TTL_S", 0)
+    run(client, client.get_logins("https://example.com/login"))
+    assert fake.actions() == ["get-logins", "get-logins"]
+
+
+def test_concurrent_lookups_for_a_site_share_one_request(client, fake):
+    fake.add_entry("https://example.com", "alice", "s3cret")
+    associate(client)
+    fake.logins_delay = 0.3  # KeePassXC waiting on its access dialog
+    first = client.get_logins("https://example.com/login")
+    second = client.get_logins("https://example.com/login?next=/")
+    assert first is second
+    run(client, first)
+    assert fake.actions().count("get-logins") == 1
+
+
+def test_site_key():
+    assert protocol.site_key("https://Example.com/a?b#c") == "https://example.com"
+    assert protocol.site_key("http://127.0.0.1:8080/x") == "http://127.0.0.1:8080"
+
+
 def test_no_logins_is_an_empty_result(client, fake):
     associate(client)
     job = run(client, client.get_logins("https://nothing.example/"))

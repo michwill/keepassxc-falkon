@@ -634,6 +634,14 @@ def run_checks(h):
 
     single = lambda path: h.url("127.0.0.1", path)  # noqa: E731
 
+    # First, before anything on 127.0.0.1 is looked up (and cached for the site).
+    @check("a page without login fields doesn't query KeePassXC")
+    def _():
+        url = single("/plain")
+        h.navigate(url)
+        time.sleep(1.5)
+        assert json.loads(h.probe("usernames", url)) == []  # alice would show if it had asked
+
     @check("KeePassXC is Falkon's active password backend")
     def _():
         h.navigate(single("/classic"))
@@ -684,13 +692,6 @@ def run_checks(h):
         h.main_eval("document.getElementById('who').focus()")
         h.probe("pressFillShortcut", obj="kpxcui")
         wait_until(lambda: h.main_eval("document.getElementById('who').value") == "alice", what="focused field filled")
-
-    @check("a page without login fields doesn't query KeePassXC")
-    def _():
-        url = single("/plain")
-        h.navigate(url)
-        time.sleep(1.5)
-        assert json.loads(h.probe("usernames", url)) == []  # alice would show if it had asked
 
     @check("sign-up form (new-password fields) is left alone")
     def _():
@@ -760,12 +761,13 @@ def run_checks(h):
     def _():
         assert json.loads(h.probe("button", obj="kpxcui"))["shown"] is True
 
-    @check("toolbar button: badge counts the login iframe's entry")
+    @check("toolbar button: badge counts the tab's entries (page and login iframe)")
     def _():
         h.navigate(h.url("127.0.0.2", "/frame"))
-        wait_until(
-            lambda: json.loads(h.probe("button", obj="kpxcui"))["badge"] == "1", what="badge for the iframe's entry"
-        )
+        wait_until(lambda: json.loads(h.probe("button", obj="kpxcui"))["badge"] in ("1", "3"), what="a badge")
+        h.probe("toolbarMenu", obj="kpxcui")  # looks up every site in the tab
+        badge = json.loads(h.probe("button", obj="kpxcui"))["badge"]
+        assert badge == "3", badge  # bob and carol for the page, alice for the iframe
 
     @check("toolbar menu groups the page's and the login iframe's entries")
     def _():
