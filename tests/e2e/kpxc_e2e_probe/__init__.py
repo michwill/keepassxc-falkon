@@ -8,9 +8,10 @@ import sys
 
 import Falkon
 from PySide6 import QtCore
-from PySide6.QtCore import QByteArray, QObject, QUrl, Slot
+from PySide6.QtCore import QByteArray, QObject, Qt, QUrl, Slot
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QLabel, QMenu, QWidget
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QWidget
 
 
 def _autofill():
@@ -136,6 +137,42 @@ class UiProbe(QObject):
     @Slot(str, int, result=bool)
     def setOption(self, name, value):
         _kpxc().store.set_option(name, value)
+        return True
+
+    @Slot(result=bool)
+    def pressFillShortcut(self):
+        """A real Ctrl+Shift+U through Qt's shortcut handling (CDP key events
+        go straight to Chromium and never reach Qt's shortcuts)."""
+        window = _window()
+        window.activateWindow()
+        target = QApplication.focusWidget() or window.weView()
+        QTest.keyClick(target, Qt.Key.Key_U, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        return True
+
+    @Slot(result=str)
+    def popup(self):
+        menu = QApplication.activePopupWidget()
+        if not isinstance(menu, QMenu):
+            return json.dumps(None)
+        view = _current_view()
+        where = view.mapFromGlobal(menu.pos())
+        active = menu.activeAction()
+        return json.dumps(
+            {
+                "labels": [a.text() for a in menu.actions() if not a.isSeparator()],
+                "active": active.text() if active else None,
+                "at": [where.x(), where.y()],
+                "view": [view.width(), view.height()],
+            }
+        )
+
+    @Slot(result=bool)
+    def triggerPopupActive(self):
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        action = menu.activeAction()
+        menu.close()
+        action.trigger()
         return True
 
     @Slot(result=str)

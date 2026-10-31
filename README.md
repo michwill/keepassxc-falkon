@@ -21,6 +21,12 @@ browser extension, no extra Python packages.
   account from the **KeePassXC toolbar button**, the **key icon** in the
   address bar, or **right-click a login field → KeePassXC** (works inside
   iframes too).
+- **Keyboard: Ctrl+Shift+U** fills the login form in the current tab. With a
+  single matching entry it fills straight away. With several, the accounts
+  pop up under the focused field, the first one highlighted, so Enter or the
+  arrow keys finish the job. If the database is locked or not connected, the
+  popup offers to unlock or connect. Change or turn off the shortcut in the
+  plugin settings.
 - **Toolbar button** on the navigation bar: the badge shows how many entries
   match the current tab, and the icon dims when KeePassXC is locked, not
   running or not connected. Its menu lists the entries per site: the page

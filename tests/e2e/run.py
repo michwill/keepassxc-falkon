@@ -697,6 +697,41 @@ def run_checks(h):
             what="fill from the menu",
         )
 
+    @check("fill shortcut: the only matching entry is filled at once")
+    def _():
+        h.navigate(single("/classic"))
+        wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"], what="auto-fill")
+        h.main_eval(
+            "var u = document.querySelector('input[name=user]'); u.value = '';"
+            "document.querySelector('input[name=pass]').value = ''; u.focus();"
+        )
+        h.probe("pressFillShortcut", obj="kpxcui")
+        wait_until(
+            lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"],
+            what="fill from the shortcut",
+        )
+        assert json.loads(h.probe("popup", obj="kpxcui")) is None, "no menu needed for a single entry"
+
+    @check("fill shortcut: several entries pop up under the field, Enter takes the first")
+    def _():
+        h.navigate(h.url("127.0.0.2", "/classic"))
+        h.main_eval("document.querySelector('input[name=user]').focus()")
+        h.probe("pressFillShortcut", obj="kpxcui")
+        popup = wait_until(lambda: json.loads(h.probe("popup", obj="kpxcui")), what="the account popup")
+        entries = sorted(popup["labels"][:2])
+        assert entries == ["bob \u2014 Multi B", "carol \u2014 Multi C"], popup
+        assert popup["active"] == popup["labels"][0], popup
+        x, y = popup["at"]
+        field_bottom = h.main_eval("document.querySelector('input[name=user]').getBoundingClientRect().bottom")
+        assert 0 <= x < popup["view"][0], popup
+        assert abs(y - field_bottom) <= 4, (popup, field_bottom)  # right under the field, not mid-page
+        user = popup["active"].split(" ")[0]
+        h.probe("triggerPopupActive", obj="kpxcui")
+        wait_until(
+            lambda: fields(h, "input[name=user]", "input[name=pass]") == [user, f"pw-{user}"],
+            what="fill from the popup",
+        )
+
     @check("toolbar button is on the navigation bar")
     def _():
         assert json.loads(h.probe("button", obj="kpxcui"))["shown"] is True

@@ -11,7 +11,7 @@ import os
 from collections.abc import Callable
 
 import Falkon
-from PySide6.QtCore import QMimeData, Qt, QTimer, QUrl
+from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMenu, QWidget
@@ -61,6 +61,7 @@ class EntriesMenu:
         self._filler = filler
         self._store = store
         self._open_settings = open_settings
+        self._popup: QMenu | None = None
 
     def sites(self, view: QWebEngineView) -> list[QUrl]:
         """One URL per site to look up: the page, then login frames elsewhere."""
@@ -81,12 +82,34 @@ class EntriesMenu:
                 uuids.update(login.uuid for login in self._client.cached_logins(lookup_url(frame.url())) or ())
         return len(uuids)
 
-    def populate(self, menu: QMenu, view: QWebEngineView, direct_fill: bool) -> None:
-        sites = self.sites(view)
-        jobs = [(url, self._client.get_logins(lookup_url(url))) for url in sites]
+    def _lookups(self, view: QWebEngineView) -> list[tuple[QUrl, Job]]:
+        jobs = [(url, self._client.get_logins(lookup_url(url))) for url in self.sites(view)]
         for _url, job in jobs:  # one shared budget: requests are serialized
             if not job.done:
                 self._client.wait(job, WAIT_MS)
+        return jobs
+
+    def fill_or_choose(self, view: QWebEngineView, at: QPoint) -> None:
+        """The fill shortcut: a single matching entry is filled straight away;
+        otherwise the entries (or what's wrong) pop up at ``at``, the first one
+        highlighted so Enter takes it."""
+        found = [
+            (url, login) for url, job in self._lookups(view) if job.done and job.error is None for login in job.result
+        ]
+        if len(found) == 1:
+            url, login = found[0]
+            self._fill(view, url, login)
+            return
+        menu = QMenu(view)
+        self.populate(menu, view, direct_fill=True)
+        menu.popup(at)
+        first = next((a for a in menu.actions() if a.isEnabled() and not a.isSeparator()), None)
+        if first is not None:
+            menu.setActiveAction(first)
+        self._popup = menu  # keep it alive while shown
+
+    def populate(self, menu: QMenu, view: QWebEngineView, direct_fill: bool) -> None:
+        jobs = self._lookups(view)
 
         problem = next(
             (
@@ -98,13 +121,13 @@ class EntriesMenu:
             ),
             None,
         )
-        if not sites:
+        if not jobs:
             _info(menu, "No website in this tab")
         elif problem is not None:
             self._add_problem(menu, problem)
         else:
             for url, job in jobs:
-                if len(sites) > 1:
+                if len(jobs) > 1:
                     header = menu.addAction(url.host())
                     header.setEnabled(False)
                     font = header.font()

@@ -28,6 +28,8 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     # Copied passwords / TOTP codes are wiped from the clipboard after this
     # many seconds (0: never), if nothing else was copied meanwhile.
     "clipboard_clear_seconds": 10,
+    # Fills the login form in the current tab (Qt portable text; "" = off).
+    "fill_shortcut": "Ctrl+Shift+U",
     # Our toolbar button has been put on the navigation bar once; after that
     # the layout is the user's (Configure Toolbar).
     "toolbar_button_placed": False,

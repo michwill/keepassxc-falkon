@@ -1,11 +1,15 @@
 """The Falkon plugin object: wires the client, backend, filler, passkeys and page scripts."""
 
+import json
 import logging
 import os
 
 import Falkon
 from PySide6 import QtCore
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWebEngineCore import QWebEngineScript
+from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMenu, QWidget
 
 from .backend import BACKEND_ID, KeePassXCBackend
@@ -35,6 +39,15 @@ _DEFAULT_TOOLBAR = [
     "button-tools",
 ]
 _BRIDGE_ID = "keepassxc"  # window.external.extra.keepassxc in SafeJsWorld
+# Where the focused field is, in the page's CSS pixels: its bottom-left
+# corner, or an iframe's top-left when the focus is inside one. As JSON:
+# PySide hands a script's arrays and objects back as empty strings.
+_FOCUS_POINT_JS = """(function () {
+  var e = document.activeElement;
+  if (!e || e === document.body || e === document.documentElement) return "null";
+  var r = e.getBoundingClientRect();
+  return JSON.stringify(e.localName === "iframe" ? [r.left, r.top] : [r.left, r.bottom]);
+})()"""
 
 
 class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
@@ -61,6 +74,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         self.entries_menu = EntriesMenu(self.client, self.filler, self.store, self.showSettings)
         self._place_button_once()
         self._buttons: dict[Falkon.BrowserWindow, KeePassXCButton] = {}
+        self._shortcuts: dict[Falkon.BrowserWindow, QShortcut] = {}
         app.plugins().mainWindowCreated.connect(self._add_button)
         app.plugins().mainWindowDeleted.connect(self._remove_button)
         for window in app.windows():  # enabled at runtime: windows already open
@@ -90,7 +104,13 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         return True
 
     def showSettings(self, parent: QWidget | None = None) -> None:
-        SettingsDialog(self.client, self.store, parent, on_passkeys_toggled=self.install_scripts).exec()
+        SettingsDialog(
+            self.client,
+            self.store,
+            parent,
+            on_passkeys_toggled=self.install_scripts,
+            on_shortcut_changed=self._update_shortcuts,
+        ).exec()
 
     # --- right-click menu on form fields --------------------------------
 
@@ -128,11 +148,40 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         button = KeePassXCButton(self.entries_menu, self.client, self.filler)
         window.navigationBar().addToolButton(button)
         self._buttons[window] = button
+        shortcut = QShortcut(self._fill_key(), window)
+        shortcut.activated.connect(lambda w=window: self.fill_shortcut(w))
+        self._shortcuts[window] = shortcut
 
     def _remove_button(self, window: Falkon.BrowserWindow) -> None:
         button = self._buttons.pop(window, None)
         if button is not None:
             window.navigationBar().removeToolButton(button)
+        shortcut = self._shortcuts.pop(window, None)
+        if shortcut is not None:
+            shortcut.setEnabled(False)
+            shortcut.deleteLater()
+
+    # --- the fill shortcut ------------------------------------------------
+
+    def _fill_key(self) -> QKeySequence:
+        return QKeySequence.fromString(
+            str(self.store.option("fill_shortcut")), QKeySequence.SequenceFormat.PortableText
+        )
+
+    def _update_shortcuts(self) -> None:
+        key = self._fill_key()
+        for shortcut in self._shortcuts.values():
+            shortcut.setKey(key)
+
+    def fill_shortcut(self, window: Falkon.BrowserWindow) -> None:
+        """Fill the login form in the window's current tab (or offer the
+        choice under the focused field)."""
+        view = window.weView()
+        if view is None or not is_web(view.url()):
+            return
+        view.page().runJavaScript(
+            _FOCUS_POINT_JS, SAFE_WORLD, lambda point: self.entries_menu.fill_or_choose(view, _anchor(view, point))
+        )
 
     # --- scripts --------------------------------------------------------
 
@@ -177,3 +226,18 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
                         frame.runJavaScript(self._fill_js, SAFE_WORLD)
             except RuntimeError:
                 continue
+
+
+def _anchor(view: QWebEngineView, point_json: object) -> QPoint:
+    """Global position for the popup: under the focused field when it's on
+    screen, else the middle of the page."""
+    try:
+        point = json.loads(point_json) if isinstance(point_json, str) else None
+    except ValueError:
+        point = None
+    if isinstance(point, list) and len(point) == 2 and all(isinstance(c, int | float) for c in point):
+        zoom = view.zoomFactor()
+        local = QPoint(int(point[0] * zoom), int(point[1] * zoom))
+        if view.rect().contains(local):
+            return view.mapToGlobal(local)
+    return view.mapToGlobal(view.rect().center())

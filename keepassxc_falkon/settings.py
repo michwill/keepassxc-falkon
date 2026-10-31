@@ -6,13 +6,14 @@ from collections.abc import Callable
 import Falkon
 import shiboken6
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -42,6 +43,7 @@ class SettingsDialog(QDialog):
         store: Store,
         parent: QWidget | None = None,
         on_passkeys_toggled: Callable[[], None] | None = None,
+        on_shortcut_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._client = client
@@ -112,15 +114,37 @@ class SettingsDialog(QDialog):
         clear_row.addWidget(clear_label)
         clear_row.addWidget(clear)
         clear_row.addStretch(1)
+
+        shortcut = QKeySequenceEdit(
+            QKeySequence.fromString(store.option("fill_shortcut"), QKeySequence.SequenceFormat.PortableText)
+        )
+        shortcut.setClearButtonEnabled(True)
+        shortcut.setMaximumSequenceLength(1)
+
+        def shortcut_changed(key: QKeySequence) -> None:
+            store.set_option("fill_shortcut", key.toString(QKeySequence.SequenceFormat.PortableText))
+            if on_shortcut_changed is not None:
+                on_shortcut_changed()
+
+        shortcut.keySequenceChanged.connect(shortcut_changed)
+        shortcut_label = QLabel("&Shortcut to fill the login form:")
+        shortcut_label.setBuddy(shortcut)
+        shortcut_row = QHBoxLayout()
+        shortcut_row.setSpacing(row_gap)
+        shortcut_row.addWidget(shortcut_label)
+        shortcut_row.addWidget(shortcut)
+        shortcut_row.addStretch(1)
         note = QLabel(
             'Filling on page load follows Falkon\'s "Autocomplete passwords" setting. '
-            "With several matches, pick an account from the KeePassXC toolbar button, "
-            "the key icon in the address bar, or the right-click menu of a login field."
+            "With several matches, press the shortcut or pick an account from the KeePassXC "
+            "toolbar button, the key icon in the address bar, or the right-click menu of a "
+            "login field."
         )
         note.setWordWrap(True)
         for widget in (self._unlock_opt, self._many_opt, self._passkeys_opt):
             options_body.addWidget(widget)
         options_body.addLayout(clear_row)
+        options_body.addLayout(shortcut_row)
         options_body.addWidget(note)
 
         # --- Connections this profile has made to KeePassXC databases.
