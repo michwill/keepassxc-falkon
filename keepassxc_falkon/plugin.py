@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QMenu, QWidget
 from .backend import BACKEND_ID, KeePassXCBackend, notify
 from .bridge import Bridge
 from .filler import SAFE_WORLD, Filler, frames_of, web_views
-from .menus import EntriesMenu, KeePassXCButton, app_icon
+from .menus import EntriesMenu, KeePassXCButton
 from .passkeys import PasskeyBroker
 from .protocol import KeePassXCClient
 from .settings import SettingsDialog
@@ -120,7 +120,7 @@ class KeePassXCPlugin(Falkon.PluginInterface, QtCore.QObject):
         # Falkon's hit test looks only at the top document: a field inside an
         # iframe reports the <iframe> element itself.
         if (r.isContentEditable() or r.tagName() == "iframe") and is_web(view.url()):
-            self.entries_menu.populate(menu.addMenu(app_icon(), "KeePassXC"), view, direct_fill=True)
+            self.entries_menu.add_to_context_menu(menu, view)
 
     # --- toolbar buttons (one per window) -------------------------------
 

@@ -8,11 +8,13 @@ an entry fills it; the toolbar menu also lists Copy username / Copy password
 """
 
 import os
+import time
 from collections.abc import Callable
 
 import Falkon
+import shiboken6
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, QUrl
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QCursor, QGuiApplication, QIcon
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -23,7 +25,11 @@ from .store import Store
 from .urls import is_web, lookup_url, origin
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
+# How long a click waits for KeePassXC before deciding it's asking the user.
 WAIT_MS = 600
+# A menu still opens if KeePassXC's access dialog is answered within this
+# long; after that, the user has likely moved on.
+MAX_DEFER_S = 120
 # Clipboard managers (Klipper, …) skip data marked like this; KeePassXC
 # marks what it copies the same way.
 SECRET_HINT = "x-kde-passwordManagerHint"
@@ -49,6 +55,10 @@ def copy_text(text: str, secret: bool = False, clear_after_s: int = 0) -> None:
         QTimer.singleShot(clear_after_s * 1000, wipe)
 
 
+# The tab's lookups: (site URL, its get-logins job).
+Lookups = list[tuple[QUrl, Job]]
+
+
 def _info(menu: QMenu, text: str) -> None:
     menu.addAction(text).setEnabled(False)
 
@@ -62,6 +72,7 @@ class EntriesMenu:
         self._store = store
         self._open_settings = open_settings
         self._popup: QMenu | None = None
+        self._waiting: object | None = None  # the request when_answered will show
 
     def sites(self, view: QWebEngineView) -> list[QUrl]:
         """One URL per site to look up: the page, then login frames elsewhere."""
@@ -82,41 +93,83 @@ class EntriesMenu:
                 uuids.update(login.uuid for login in self._client.cached_logins(lookup_url(frame.url())) or ())
         return len(uuids)
 
-    def _lookups(self, view: QWebEngineView) -> list[tuple[QUrl, Job]]:
+    def lookups(self, view: QWebEngineView) -> Lookups:
+        """Ask KeePassXC about every site in the tab, waiting up to WAIT_MS
+        for the answers (one shared budget: requests are serialized)."""
         jobs = [(url, self._client.get_logins(lookup_url(url))) for url in self.sites(view)]
-        for _url, job in jobs:  # one shared budget: requests are serialized
+        for _url, job in jobs:
             if not job.done:
                 self._client.wait(job, WAIT_MS)
         return jobs
 
-    def fill_or_choose(self, view: QWebEngineView, at: QPoint) -> None:
+    def when_answered(self, view: QWebEngineView, show: Callable[[Lookups], None], jobs: Lookups | None = None) -> None:
+        """Call ``show(jobs)`` once KeePassXC has answered the tab's lookups:
+        right away if it answers within WAIT_MS, otherwise when it does.
+
+        Taking longer means KeePassXC is asking the user (its access dialog).
+        A menu opened meanwhile would hold the pointer grab, as Qt popups do,
+        so the user's first click on that dialog would only close the menu.
+        Only the latest request shows, and only while its tab is on screen.
+        """
+        if jobs is None:
+            jobs = self.lookups(view)
+        self._waiting = token = object()
+        pending = [job for _url, job in jobs if not job.done]
+        if not pending:
+            show(jobs)
+            return
+        asked = time.monotonic()
+
+        def answered(_job: Job) -> None:
+            if self._waiting is not token or not all(job.done for job in pending):
+                return
+            self._waiting = None
+            if shiboken6.isValid(view) and view.isVisible() and time.monotonic() - asked < MAX_DEFER_S:
+                show(jobs)
+
+        for job in pending:
+            job.then(answered)
+
+    def fill_or_choose(self, view: QWebEngineView, at: QPoint, jobs: Lookups | None = None) -> None:
         """The fill shortcut: a single matching entry is filled straight away;
         otherwise the entries (or what's wrong) pop up at ``at``, the first one
         highlighted so Enter takes it."""
-        found = [
-            (url, login) for url, job in self._lookups(view) if job.done and job.error is None for login in job.result
-        ]
+        self.when_answered(view, lambda answered: self._fill_or_choose(view, at, answered), jobs)
+
+    def _fill_or_choose(self, view: QWebEngineView, at: QPoint, jobs: Lookups) -> None:
+        found = [(url, login) for url, job in jobs if job.error is None for login in job.result]
         if len(found) == 1:
             url, login = found[0]
             self._fill(view, url, login)
             return
         menu = QMenu(view)
-        self.populate(menu, view, direct_fill=True)
+        self.populate(menu, view, jobs, direct_fill=True)
         menu.popup(at)
         first = next((a for a in menu.actions() if a.isEnabled() and not a.isSeparator()), None)
         if first is not None:
             menu.setActiveAction(first)
         self._popup = menu  # keep it alive while shown
 
-    def populate(self, menu: QMenu, view: QWebEngineView, direct_fill: bool) -> None:
-        jobs = self._lookups(view)
+    def add_to_context_menu(self, menu: QMenu, view: QWebEngineView) -> None:
+        """A KeePassXC submenu with the tab's entries in a login field's
+        right-click menu. If KeePassXC is asking the user first, Falkon's
+        menu would keep that dialog's first click to itself (see
+        ``when_answered``): close it, and once KeePassXC answers, fill or
+        offer the entries where the user right-clicked."""
+        jobs = self.lookups(view)
+        if all(job.done for _url, job in jobs):
+            self.populate(menu.addMenu(app_icon(), "KeePassXC"), view, jobs, direct_fill=True)
+            return
+        QTimer.singleShot(0, menu, menu.close)
+        self.fill_or_choose(view, QCursor.pos(), jobs)
 
+    def populate(self, menu: QMenu, view: QWebEngineView, jobs: Lookups, direct_fill: bool) -> None:
+        """Fill ``menu`` from answered lookups (see ``when_answered``)."""
         problem = next(
             (
                 job.error
                 for _url, job in jobs
-                if job.done
-                and job.error is not None
+                if job.error is not None
                 and job.error.code in (protocol.NOT_RUNNING, protocol.DATABASE_NOT_OPENED, protocol.NOT_ASSOCIATED)
             ),
             None,
@@ -136,17 +189,8 @@ class EntriesMenu:
                     font.setBold(True)
                     header.setFont(font)
                 self._add_site(menu, view, url, job, direct_fill)
-                if not job.done:
-                    # KeePassXC is asking the user (access dialog): refresh the
-                    # open menu once it answers.
-                    job.then(lambda _j: self._refresh(menu, view, direct_fill))
         menu.addSeparator()
         menu.addAction("KeePassXC settings…").triggered.connect(lambda: self._open_settings(view))
-
-    def _refresh(self, menu: QMenu, view: QWebEngineView, direct_fill: bool) -> None:
-        if menu.isVisible():
-            menu.clear()
-            self.populate(menu, view, direct_fill)
 
     def _add_problem(self, menu: QMenu, error: KeePassXCError) -> None:
         if error.code == protocol.DATABASE_NOT_OPENED:
@@ -159,9 +203,6 @@ class EntriesMenu:
             _info(menu, "KeePassXC isn't running (or browser integration is off)")
 
     def _add_site(self, menu: QMenu, view: QWebEngineView, url: QUrl, job: Job, direct_fill: bool) -> None:
-        if not job.done:
-            _info(menu, "Waiting for KeePassXC…")
-            return
         if job.error is not None:
             _info(menu, str(job.error))
             return
@@ -262,11 +303,33 @@ class KeePassXCButton(Falkon.AbstractButtonInterface):
 
     def _on_clicked(self, controller: Falkon.AbstractButtonInterface.ClickController) -> None:
         view = self.webView()
-        menu = QMenu(view.window() if view is not None else None)
         if view is None:
+            menu = QMenu()
             _info(menu, "No website in this tab")
-        else:
-            self._menus.populate(menu, view, direct_fill=False)
+            self._popup_from_click(menu, controller)
+            return
+        clicking = True  # Falkon's click controller is only valid during this call
+
+        def show(jobs: Lookups) -> None:
+            menu = QMenu(view.window())
+            self._menus.populate(menu, view, jobs, direct_fill=False)
+            if clicking:
+                self._popup_from_click(menu, controller)
+            else:  # KeePassXC asked the user first
+                menu.popup(self._below_button(view, menu))
+                self._menu = menu
+
+        self._menus.when_answered(view, show)
+        clicking = False
+
+    def _popup_from_click(self, menu: QMenu, controller: Falkon.AbstractButtonInterface.ClickController) -> None:
         menu.aboutToHide.connect(controller.callPopupClosed)
         menu.popup(controller.callPopupPosition(menu.sizeHint()))
         self._menu = menu  # keep it alive while shown
+
+    def _below_button(self, view: QWebEngineView, menu: QMenu) -> QPoint:
+        """Where Falkon opens a button's menu: under it, right-aligned."""
+        for widget in view.window().findChildren(QWidget):
+            if widget.property("button-id") == self.ID and widget.isVisible():
+                return widget.mapToGlobal(QPoint(widget.width() - menu.sizeHint().width(), widget.height()))
+        return QCursor.pos()

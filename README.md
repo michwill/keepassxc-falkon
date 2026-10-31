@@ -95,7 +95,9 @@ KeePassXC asks before giving Falkon a site's passwords for the first time; tick
 *Remember* in that dialog, or enable *Never ask before accessing credentials*
 in KeePassXC's browser-integration settings. If you allow without
 *Remember*, the plugin reuses KeePassXC's answer for that site for 30 seconds,
-so a right-click right after doesn't ask again.
+so a right-click right after doesn't ask again. While KeePassXC is asking, the
+plugin's menus stay closed (an open menu would swallow your first click on
+KeePassXC's dialog) and open once you answer.
 
 ## How it works
 

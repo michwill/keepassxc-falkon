@@ -56,6 +56,7 @@ DB_PASSWORD = "e2e-password"
 ASSOC_ID = "falkon-e2e"
 TOTP_SECRET = "JBSWY3DPEHPK3PXP"
 PASSKEY_DIALOG = "KeePassXC - Passkey credentials"
+ACCESS_DIALOG = "KeePassXC - Browser Access Request"
 # That dialog's default button is Cancel; from its initial focus, Shift+Tab
 # wraps round to Register/Authenticate.
 CONFIRM = ("shift+Tab", "space")
@@ -436,6 +437,9 @@ class Harness:
             KEEPASSXC_FALKON_DEBUG="1",
         )
         self.db_path = os.path.join(workdir, "e2e.kdbx")
+        self.kpxc_socket = os.path.join(
+            self.runtime, "app", "org.keepassxc.KeePassXC", "org.keepassxc.KeePassXC.BrowserServer"
+        )
 
     def url(self, host, path):
         return f"http://{host}:{self.port}{path}"
@@ -449,34 +453,7 @@ class Harness:
         write(
             self.kpxc_local_config, "\n".join(["[Security]", "QuickUnlock=false", "LockDatabaseScreenLock=false", ""])
         )
-        write(
-            self.kpxc_config,
-            "\n".join(
-                [
-                    "[General]",
-                    "ConfigVersion=2",
-                    "SingleInstance=false",
-                    "RememberLastDatabases=false",
-                    "AutoSaveAfterEveryChange=true",
-                    "UpdateCheckMessageShown=true",
-                    "[GUI]",
-                    "CheckForUpdates=false",
-                    "ShowTrayIcon=false",
-                    "[Browser]",
-                    "Enabled=true",
-                    "AlwaysAllowAccess=true",
-                    "AlwaysAllowUpdate=true",
-                    "UnlockDatabase=true",
-                    "UpdateBinaryPath=false",
-                    "Browser_AllowLocalhostWithPasskeys=true",
-                    "[FdoSecrets]",
-                    "Enabled=false",
-                    "[SSHAgent]",
-                    "Enabled=false",
-                    "",
-                ]
-            ),
-        )
+        self.write_kpxc_config(always_allow=True)
         profile = os.path.join(cfg, "falkon", "profiles", "e2e")
         version = subprocess.run(["falkon", "--version"], env=self.env, capture_output=True, text=True).stdout.split()[
             -1
@@ -512,13 +489,49 @@ class Harness:
         for host in ("127.0.0.1", "127.0.0.2"):
             self.servers.append(serve(host, self.port))
 
+    def write_kpxc_config(self, always_allow):
+        """``always_allow``: KeePassXC hands out entries without its access
+        dialog (every check but the one about that dialog)."""
+        write(
+            self.kpxc_config,
+            "\n".join(
+                [
+                    "[General]",
+                    "ConfigVersion=2",
+                    "SingleInstance=false",
+                    "RememberLastDatabases=false",
+                    "AutoSaveAfterEveryChange=true",
+                    "UpdateCheckMessageShown=true",
+                    "[GUI]",
+                    "CheckForUpdates=false",
+                    "ShowTrayIcon=false",
+                    "[Browser]",
+                    "Enabled=true",
+                    f"AlwaysAllowAccess={'true' if always_allow else 'false'}",
+                    "AlwaysAllowUpdate=true",
+                    "UnlockDatabase=true",
+                    "UpdateBinaryPath=false",
+                    "Browser_AllowLocalhostWithPasskeys=true",
+                    "[FdoSecrets]",
+                    "Enabled=false",
+                    "[SSHAgent]",
+                    "Enabled=false",
+                    "",
+                ]
+            ),
+        )
+
     def start(self):
         # KeePassXC goes on the sandbox's virtual display, so the test can
-        # press keys in its passkey dialogs; Falkon stays offscreen.
+        # press keys in its dialogs; Falkon stays offscreen.
         self.x = XDisplay(self.x_display)
+        self.start_keepassxc()
+        self.start_falkon()
+
+    def start_keepassxc(self):
         kpxc_env = dict(self.env, QT_QPA_PLATFORM="xcb")
 
-        with open(os.path.join(self.work, "keepassxc.log"), "w") as log:
+        with open(os.path.join(self.work, "keepassxc.log"), "a") as log:
             kpxc = subprocess.Popen(
                 [
                     "keepassxc",
@@ -538,11 +551,22 @@ class Harness:
         assert kpxc.stdin is not None  # stdin=PIPE
         kpxc.stdin.write(DB_PASSWORD + "\n")
         kpxc.stdin.close()
-        self.procs.append(kpxc)
-        sock = os.path.join(self.runtime, "app", "org.keepassxc.KeePassXC", "org.keepassxc.KeePassXC.BrowserServer")
-        wait_until(lambda: os.path.exists(sock), timeout=20, what="KeePassXC browser socket")
+        self.procs.insert(0, kpxc)  # stopped after Falkon
+        self.kpxc = kpxc
+        wait_until(lambda: os.path.exists(self.kpxc_socket), timeout=20, what="KeePassXC browser socket")
         time.sleep(2)  # the socket comes up before --pw-stdin has opened the database
 
+    def restart_keepassxc(self, always_allow):
+        self.kpxc.terminate()
+        self.kpxc.wait(10)
+        self.procs.remove(self.kpxc)
+        # It leaves its socket file behind; the next one must be the new server's.
+        if os.path.exists(self.kpxc_socket):
+            os.remove(self.kpxc_socket)
+        self.write_kpxc_config(always_allow)
+        self.start_keepassxc()
+
+    def start_falkon(self):
         self.falkon_log = os.path.join(self.work, "falkon.log")
         with open(self.falkon_log, "w") as flog:
             falkon = subprocess.Popen(
@@ -1156,6 +1180,21 @@ def run_checks(h):
             )
 
         wait_until(both_on_disk, timeout=20, interval=1, what="password and passkey in the .kdbx file")
+
+    # Last: restarts KeePassXC so that it asks before handing out entries.
+    @check("access dialog: no menu while KeePassXC asks; after one Allow the toolbar menu opens")
+    def _():
+        # A menu open while KeePassXC shows its access dialog holds the
+        # pointer grab, so the user's first click on the dialog would only
+        # close the menu; the menu waits for KeePassXC's answer instead.
+        h.restart_keepassxc(always_allow=False)
+        h.navigate(h.url("127.0.0.2", "/plain"))  # no login form: nothing asked on load
+        h.probe("clickToolbarButton", obj="kpxcui")
+        wait_until(lambda: ACCESS_DIALOG in h.x.titles(), what="KeePassXC's access dialog")
+        assert json.loads(h.probe("popup", obj="kpxcui")) is None
+        h.x.press(ACCESS_DIALOG, "Return")  # Allow Selected
+        menu = wait_until(lambda: json.loads(h.probe("popup", obj="kpxcui")), what="the toolbar menu")
+        assert {"bob \u2014 Multi B", "carol \u2014 Multi C"} <= set(menu["labels"]), menu
 
     return results
 

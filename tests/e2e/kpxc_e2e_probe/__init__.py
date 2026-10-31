@@ -67,6 +67,14 @@ def _current_view():
     return _window().weView()
 
 
+def _answered_lookups():
+    plugin = _kpxc()
+    jobs = plugin.entries_menu.lookups(_current_view())
+    for _url, job in jobs:
+        plugin.client.wait(job, 10000)
+    return jobs
+
+
 def _describe(action):
     if action.isSeparator():
         return "-"
@@ -95,7 +103,7 @@ class UiProbe(QObject):
     @Slot(result=str)
     def menuLabels(self):
         self._menu = QMenu()
-        _kpxc().entries_menu.populate(self._menu, _current_view(), direct_fill=True)
+        _kpxc().entries_menu.populate(self._menu, _current_view(), _answered_lookups(), direct_fill=True)
         return json.dumps([a.text() for a in self._menu.actions() if not a.isSeparator()])
 
     @Slot(int, result=bool)
@@ -108,7 +116,7 @@ class UiProbe(QObject):
         """The toolbar menu's items, "-" for a separator; "*" marks a bold
         (an entry's fill) item, "~" a disabled one."""
         self._tmenu = QMenu()
-        _kpxc().entries_menu.populate(self._tmenu, _current_view(), direct_fill=False)
+        _kpxc().entries_menu.populate(self._tmenu, _current_view(), _answered_lookups(), direct_fill=False)
         return json.dumps([_describe(a) for a in self._tmenu.actions()])
 
     @Slot(str, str, result=bool)
@@ -174,6 +182,15 @@ class UiProbe(QObject):
         action = menu.activeAction()
         menu.close()
         action.trigger()
+        return True
+
+    @Slot(result=bool)
+    def clickToolbarButton(self):
+        """Click the KeePassXC toolbar button the way a user does (whatever
+        menu it opens stays open)."""
+        window = _window()
+        button = next(w for w in window.findChildren(QWidget) if w.property("button-id") == "keepassxc-falkon")
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
         return True
 
     @Slot(str, result=str)
