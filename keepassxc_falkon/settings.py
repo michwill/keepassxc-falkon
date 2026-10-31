@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import hig
 from .backend import BACKEND_ID
 from .protocol import KeePassXCClient
 from .store import Store
@@ -46,42 +46,51 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._client = client
         self._store = store
-        self.setWindowTitle("KeePassXC")
+        self.setWindowTitle("KeePassXC Settings")
         self.setWindowIcon(QIcon.fromTheme("keepassxc"))
+        row_gap = hig.item_spacing(self)
 
-        status = QGroupBox("Status")
-        grid = QGridLayout(status)
+        # --- Status: what the plugin sees, and what to do about it.
+        status, status_body = hig.section(self, "Status")
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(row_gap)
+        grid.setVerticalSpacing(row_gap)
         self._rows: dict[str, tuple[QLabel, QLabel]] = {}
         for i, key in enumerate(("running", "database", "connection", "backend")):
             icon, text = QLabel(), QLabel()
             text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            grid.addWidget(icon, i, 0)
+            text.setWordWrap(True)
+            grid.addWidget(icon, i, 0, Qt.AlignmentFlag.AlignTop)
             grid.addWidget(text, i, 1)
             self._rows[key] = (icon, text)
         grid.setColumnStretch(1, 1)
+        status_body.addLayout(grid)
 
-        self._connect = QPushButton("Connect to database…")
+        self._connect = QPushButton("Co&nnect to Database…")
         self._connect.clicked.connect(lambda: client.associate(callback=self._refresh))
-        self._unlock = QPushButton("Unlock database")
+        self._unlock = QPushButton("&Unlock Database")
         self._unlock.clicked.connect(lambda: client.unlock())
-        self._use = QPushButton("Use KeePassXC for passwords")
+        self._use = QPushButton("Use KeePassXC for &Passwords")
         self._use.clicked.connect(self._use_backend)
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("&Refresh")
         refresh.clicked.connect(self._refresh)
         actions = QHBoxLayout()
+        actions.setSpacing(row_gap)
         for button in (self._connect, self._unlock, self._use, refresh):
             actions.addWidget(button)
         actions.addStretch(1)
+        status_body.addLayout(actions)
 
-        options = QGroupBox("Options")
-        opt = QVBoxLayout(options)
-        self._unlock_opt = QCheckBox("Ask KeePassXC to unlock when a page shows a login form")
+        # --- Options (applied as they change, so there's no OK/Cancel).
+        options, options_body = hig.section(self, "Options")
+        self._unlock_opt = QCheckBox("Ask KeePassXC to unlock when a page shows a &login form")
         self._unlock_opt.setChecked(store.option("unlock_on_login_form"))
         self._unlock_opt.toggled.connect(lambda on: store.set_option("unlock_on_login_form", on))
-        self._many_opt = QCheckBox("When several entries match, fill the best match without asking")
+        self._many_opt = QCheckBox("When several entries match, fill the &best match without asking")
         self._many_opt.setChecked(store.option("fill_first_of_many"))
         self._many_opt.toggled.connect(lambda on: store.set_option("fill_first_of_many", on))
-        self._passkeys_opt = QCheckBox("Use KeePassXC for passkeys (applies to pages loaded afterwards)")
+        self._passkeys_opt = QCheckBox("Use KeePassXC for pass&keys (applies to pages loaded afterwards)")
         self._passkeys_opt.setChecked(store.option("passkeys"))
 
         def toggle_passkeys(on: bool) -> None:
@@ -90,14 +99,17 @@ class SettingsDialog(QDialog):
                 on_passkeys_toggled()
 
         self._passkeys_opt.toggled.connect(toggle_passkeys)
-        clear_row = QHBoxLayout()
-        clear_row.addWidget(QLabel("Clear copied passwords from the clipboard after"))
         clear = QSpinBox()
         clear.setRange(0, 600)
         clear.setSuffix(" s")
         clear.setSpecialValueText("never")
         clear.setValue(store.option("clipboard_clear_seconds"))
         clear.valueChanged.connect(lambda v: store.set_option("clipboard_clear_seconds", v))
+        clear_label = QLabel("Clear copied passwords from the clipboard &after:")
+        clear_label.setBuddy(clear)
+        clear_row = QHBoxLayout()
+        clear_row.setSpacing(row_gap)
+        clear_row.addWidget(clear_label)
         clear_row.addWidget(clear)
         clear_row.addStretch(1)
         note = QLabel(
@@ -106,27 +118,32 @@ class SettingsDialog(QDialog):
             "the key icon in the address bar, or the right-click menu of a login field."
         )
         note.setWordWrap(True)
-        for w in (self._unlock_opt, self._many_opt, self._passkeys_opt):
-            opt.addWidget(w)
-        opt.addLayout(clear_row)
-        opt.addWidget(note)
+        for widget in (self._unlock_opt, self._many_opt, self._passkeys_opt):
+            options_body.addWidget(widget)
+        options_body.addLayout(clear_row)
+        options_body.addWidget(note)
 
-        forget_row = QHBoxLayout()
+        # --- Connections this profile has made to KeePassXC databases.
+        connections, connections_body = hig.section(self, "Connections")
         self._saved = QLabel()
         self._saved.setWordWrap(True)
-        forget = QPushButton("Forget connections")
+        forget = QPushButton("&Forget Connections")
         forget.clicked.connect(self._forget)
+        forget_row = QHBoxLayout()
+        forget_row.setSpacing(row_gap)
         forget_row.addWidget(self._saved, 1)
         forget_row.addWidget(forget)
+        connections_body.addLayout(forget_row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(status)
-        layout.addLayout(actions)
-        layout.addWidget(options)
-        layout.addLayout(forget_row)
+        hig.apply_dialog_layout(self, layout)
+        layout.addLayout(status)
+        layout.addLayout(options)
+        layout.addLayout(connections)
+        layout.addStretch(1)
         layout.addWidget(buttons)
 
         client.stateChanged.connect(self._render)
