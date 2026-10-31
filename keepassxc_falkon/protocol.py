@@ -242,9 +242,9 @@ class KeePassXCClient(QObject):
         from a short-lived per-site cache; concurrent asks for a site share
         one request (and so at most one KeePassXC access dialog)."""
         key = site_key(url)
-        hit = self._cache.get(key)
-        if hit is not None and time.monotonic() - hit[0] < CACHE_TTL_S:
-            return Job.finished(result=hit[1]).then(callback)
+        fresh = self.fresh_logins(url)
+        if fresh is not None:
+            return Job.finished(result=fresh).then(callback)
         job = self._pending.get(key)
         if job is None or job.done:
             job = self._submit(self._get_logins(url))
@@ -252,7 +252,14 @@ class KeePassXCClient(QObject):
             job.then(lambda _j: self._pending.pop(key, None))
         return job.then(callback)
 
+    def fresh_logins(self, url: str) -> list[Login] | None:
+        """KeePassXC's answer for the site if it's recent enough to reuse
+        without asking again (``CACHE_TTL_S``); None otherwise."""
+        hit = self._cache.get(site_key(url))
+        return hit[1] if hit is not None and time.monotonic() - hit[0] < CACHE_TTL_S else None
+
     def cached_logins(self, url: str) -> list[Login] | None:
+        """The last answer for the site, however old: for display only."""
         hit = self._cache.get(site_key(url))
         return hit[1] if hit is not None else None
 

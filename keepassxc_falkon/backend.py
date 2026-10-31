@@ -85,7 +85,9 @@ class KeePassXCBackend(Falkon.PasswordBackend):
             return []
         self._origins[host_key(url)] = origin(url)
         key = lookup_url(url)
-        if self._client.cached_logins(key) is None and not self._filler.has_login_form(url):
+        # No login fields on the page and no fresh answer for the site: no
+        # login expected (e.g. already signed in), so don't ask KeePassXC.
+        if self._client.fresh_logins(key) is None and not self._filler.has_login_form(url):
             return []
         job = self._client.get_logins(key)
         # Don't stall Falkon twice on the same slow lookup (it asks for

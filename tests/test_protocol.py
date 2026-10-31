@@ -116,6 +116,19 @@ def test_lookups_are_cached_per_site_for_a_while(client, fake, monkeypatch):
     assert fake.actions() == ["get-logins", "get-logins"]
 
 
+def test_fresh_and_last_known_answers(client, fake, monkeypatch):
+    fake.add_entry("https://example.com", "alice", "s3cret")
+    associate(client)
+    assert client.fresh_logins(URL) is None
+    run(client, client.get_logins(URL))
+    assert [e.login for e in client.fresh_logins("https://example.com/other")] == ["alice"]
+    monkeypatch.setattr(protocol, "CACHE_TTL_S", 0)
+    # Too old to reuse without asking KeePassXC (the backend's gate)...
+    assert client.fresh_logins(URL) is None
+    # ...but still what the toolbar badge shows.
+    assert [e.login for e in client.cached_logins(URL)] == ["alice"]
+
+
 def test_concurrent_lookups_for_a_site_share_one_request(client, fake):
     fake.add_entry("https://example.com", "alice", "s3cret")
     associate(client)

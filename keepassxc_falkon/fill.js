@@ -20,16 +20,36 @@
   var setNativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
 
   var USER_TYPES = { "": 1, text: 1, email: 1, tel: 1 };
-  var USER_HINT = /user|login|email|e-mail|account|identifier|acct/i;
+  // Words (not substrings: generated ids like "id__q8user" don't count) in a
+  // field's name, id, placeholder or label that say "account name here".
+  var USER_WORDS = { user: 1, username: 1, userid: 1, login: 1, email: 1, mail: 1, account: 1,
+                     acct: 1, identifier: 1, signin: 1, uid: 1 };
+  var SEARCH_WORDS = { search: 1, query: 1, find: 1, filter: 1 };
 
   function attr(el, name) {
     return (el.getAttribute(name) || "").toLowerCase();
+  }
+
+  function words(el) {
+    var text = [el.name, el.id, el.getAttribute("placeholder"), el.getAttribute("aria-label")].join(" ");
+    return text.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
+  }
+
+  function hasWord(el, set) {
+    return words(el).some(function (w) { return set[w] === 1; });
+  }
+
+  function isSearch(el) {
+    return attr(el, "enterkeyhint") === "search" || /search/.test(attr(el, "autocomplete")) ||
+      !!el.closest('[role="search"], search') || hasWord(el, SEARCH_WORDS);
   }
 
   function visible(el) {
     if (!el.isConnected || el.disabled || el.readOnly) return false;
     var r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return false;
+    // Parked off the page (a common way to hide a field) isn't shown.
+    if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return false;
     var s = window.getComputedStyle(el);
     return s.visibility !== "hidden" && s.display !== "none" && parseFloat(s.opacity || "1") > 0.05;
   }
@@ -60,7 +80,7 @@
   function isUsername(el) {
     var type = attr(el, "type");
     if (!(type in USER_TYPES)) return false;
-    if (/one-time-code|cc-|search/.test(attr(el, "autocomplete"))) return false;
+    if (/one-time-code|cc-/.test(attr(el, "autocomplete")) || isSearch(el)) return false;
     return visible(el);
   }
 
@@ -68,8 +88,7 @@
   function looksLikeUsername(el) {
     if (/\b(username|email|webauthn)\b/.test(attr(el, "autocomplete"))) return true;
     if (attr(el, "type") === "email") return true;
-    return USER_HINT.test([el.name, el.id, el.getAttribute("placeholder"),
-                           el.getAttribute("aria-label")].join(" "));
+    return hasWord(el, USER_WORDS);
   }
 
   function scopeOf(el) {

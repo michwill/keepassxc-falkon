@@ -5,6 +5,7 @@
 
 import json
 import sys
+from typing import Any
 
 import Falkon
 from PySide6 import QtCore
@@ -173,6 +174,13 @@ class UiProbe(QObject):
         action = menu.activeAction()
         menu.close()
         action.trigger()
+        return True
+
+    @Slot(int, result=bool)
+    def setCacheTtl(self, seconds):
+        # The plugin's module as Falkon loaded it (importing it here could load it twice).
+        protocol: Any = sys.modules["keepassxc_falkon.protocol"]
+        protocol.CACHE_TTL_S = seconds
         return True
 
     @Slot(result=str)

@@ -161,6 +161,10 @@ window.startLogin = function (allow) {
   <input type="email" id="ui-input-v-2" autocomplete="email" placeholder="a@work.com">
   <button type="submit">Sign In</button>
 </form>""",
+    # A site search box (generated id with "user" in it): not a login field.
+    "/search": """<!doctype html><title>search</title><header><form role="search">
+  <input type="text" id="id__q8user" placeholder="Search" aria-label="Search query">
+</form></header><p>Signed-in content.</p>""",
     # A field nothing marks as a login field: only an explicit fill uses it.
     "/bare": """<!doctype html><title>bare</title><div><input type="text" id="who"></div>""",
     "/plain": """<!doctype html><title>plain</title><p>No login form here.</p>""",
@@ -642,6 +646,13 @@ def run_checks(h):
         time.sleep(1.5)
         assert json.loads(h.probe("usernames", url)) == []  # alice would show if it had asked
 
+    @check("a search box isn't taken for a login field")
+    def _():
+        url = single("/search")
+        h.navigate(url)
+        time.sleep(1.5)
+        assert json.loads(h.probe("usernames", url)) == []  # alice would show if it had asked
+
     @check("KeePassXC is Falkon's active password backend")
     def _():
         h.navigate(single("/classic"))
@@ -675,6 +686,20 @@ def run_checks(h):
             ),
             what="filled shadow-DOM fields",
         )
+
+    @check("an expired answer doesn't make pages without login fields ask again")
+    def _():
+        h.navigate(single("/classic"))  # looked up: the site has an answer now
+        wait_until(lambda: fields(h, "input[name=user]", "input[name=pass]") == ["alice", "s3cret"], what="fill")
+        h.probe("setCacheTtl", 1, obj="kpxcui")
+        try:
+            time.sleep(1.5)  # the answer is stale now
+            url = single("/plain")
+            h.navigate(url)
+            time.sleep(1.5)
+            assert json.loads(h.probe("usernames", url)) == [], "asked KeePassXC for a page with no login fields"
+        finally:
+            h.probe("setCacheTtl", 30, obj="kpxcui")
 
     @check("identifier-first page (email field only) is filled on load")
     def _():
